@@ -1,0 +1,16 @@
+repos:
+-   repo: https://github.com/psf/black
+    rev: 24.4.2
+    hooks:
+    -   id: black
+        types: [file, python]
+-   repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v2.3.0
+    hooks:
+    -   id: check-yaml
+    -   id: end-of-file-fixer
+        types: [file, python]
+    -   id: trailing-whitespace
+        types: [file, python]
+    -   id: flake8
+        types: [file, python]

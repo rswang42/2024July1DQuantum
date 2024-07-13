@@ -1,0 +1,7 @@
+.venv_for_vscode/
+.venv/
+MLSummerSchoolVienna2022/
+UCAS_QMteaching/
+__pycache__/
+node_modules/
+.pytest_cache/
