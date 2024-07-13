@@ -1,14 +1,23 @@
 """Support Functionalities"""
 
 from functools import partial
+import time
+import os
 
+import matplotlib.pyplot as plt
 import numpy as np
 import jax
 import jax.numpy as jnp
 from flax import linen as flax_nn
 import optax
+import scipy
+import tqdm.notebook as tqdm
 
 jax.config.update("jax_enable_x64", True)
+
+
+def Vpot(x):
+    return 3 * x**4 + x**3 / 2 - 3 * x**2
 
 
 def buildH(
@@ -642,30 +651,361 @@ class MLPFlow(flax_nn.Module):
     """A simple MLP flow"""
 
     out_dims: int
+    mlp_width: int
+    mlp_depth: int
 
     @flax_nn.compact
     def __call__(self, x):
-        _init_x = x
-        x = x.reshape(
-            1,
+        for i in range(self.mlp_depth):
+            _init_x = x
+            x = x.reshape(
+                1,
+            )
+            x = flax_nn.Dense(self.mlp_width)(x)
+            x = flax_nn.sigmoid(x)
+            x = flax_nn.Dense(self.mlp_width)(x)
+            x = flax_nn.sigmoid(x)
+            x = flax_nn.Dense(self.out_dims)(x)
+            x = _init_x + x
+
+        return x
+
+
+def training_kernel(args: dict, savefig: bool = True) -> None:
+    """Training Kernel"""
+    # Initialize flow
+    key = args["key"]
+    batch_size = args["batch_size"]
+    total_num_of_states = args["total_num_of_states"]
+    thermal_step = args["thermal_step"]
+    acc_steps = args["acc_steps"]
+    mc_steps = args["mc_steps"]
+    step_size = args["step_size"]
+    num_substeps = args["num_substeps"]
+    init_width = args["init_width"]
+    mlp_width = args["mlp_width"]
+    mlp_depth = args["mlp_depth"]
+    init_learning_rate = args["init_learning_rate"]
+    iterations = args["iterations"]
+    inference_batch_size = args["inference_batch_size"]
+    inference_thermal_step = args["inference_thermal_step"]
+    figure_save_path = args["figure_save_path"]
+
+    num_of_excitation_orbs = total_num_of_states
+    state_indices = np.arange(total_num_of_states)
+
+    if total_num_of_states == 1:
+        print("=======================GS=========================")
+    else:
+        print("======================================")
+        print(f"First {num_of_excitation_orbs} Excitation States")
+        print("======================================")
+
+    if savefig:
+        if not os.path.isdir(figure_save_path):
+            print("Creating Directory")
+            os.makedirs(figure_save_path)
+        else:
+            # raise FileExistsError("Desitination already exists! Please check!")
+            pass
+
+    model_flow = MLPFlow(out_dims=1, mlp_width=mlp_width, mlp_depth=mlp_depth)
+    key, subkey = jax.random.split(key)
+    x_dummy = jnp.array(-1.0, dtype=jnp.float64)
+    key, subkey = jax.random.split(key)
+    params = model_flow.init(subkey, x_dummy)
+    # Initial Jacobian
+    init_jacobian = jax.jacfwd(lambda x: model_flow.apply(params, x))(x_dummy)
+    print(f"Init Jacobian = \n{init_jacobian}")
+
+    # Initialize Wavefunction
+    wf_ansatz_obj = WFAnsatz(flow=model_flow)
+    wf_ansatz = wf_ansatz_obj.wf_ansatz
+    wf_vmapped = jax.vmap(wf_ansatz, in_axes=(None, 0, 0))
+
+    # Plotting wavefunction
+    print("Wavefunction (Initialization)")
+    xmin = -10
+    xmax = 10
+    Nmesh = 2000
+    xmesh = np.linspace(xmin, xmax, Nmesh, dtype=np.float64)
+    mesh_interval = xmesh[1] - xmesh[0]
+    plt.figure()
+    for i in state_indices:
+        wf_on_mesh = jax.vmap(wf_ansatz, in_axes=(None, 0, None))(params, xmesh, i)
+        plt.plot(xmesh, wf_on_mesh, label=f"n={i}")
+    plt.xlim([-10, 10])
+    plt.legend()
+    plt.title("Wavefunction (Initialization)")
+    if savefig:
+        plt.savefig(
+            f"{os.path.join(figure_save_path, "WavefunctionInitialization.png")}"
         )
-        x = flax_nn.Dense(3)(x)
-        x = flax_nn.sigmoid(x)
-        x = flax_nn.Dense(3)(x)
-        x = flax_nn.sigmoid(x)
-        x = flax_nn.Dense(self.out_dims)(x)
-        x = _init_x + x
-        _init_x = x
-        x = flax_nn.Dense(3)(x)
-        x = flax_nn.sigmoid(x)
-        x = flax_nn.Dense(3)(x)
-        x = flax_nn.sigmoid(x)
-        x = flax_nn.Dense(self.out_dims)(x)
-        x = _init_x + x
-        _init_x = x
-        x = flax_nn.Dense(3)(x)
-        x = flax_nn.sigmoid(x)
-        x = flax_nn.Dense(3)(x)
-        x = flax_nn.sigmoid(x)
-        x = flax_nn.Dense(self.out_dims)(x)
-        return _init_x + x
+        print("Figure Saved.")
+    else:
+        plt.show()
+    plt.close()
+
+    # Local Energy Estimator
+    energy_estimator = EnergyEstimator(wf_ansatz=wf_ansatz)
+
+    # Metropolis, thermalization
+    key, subkey = jax.random.split(key)
+    init_x_batched = init_batched_x(
+        key=subkey,
+        batch_size=batch_size,
+        num_of_orbs=state_indices.shape[0],
+        init_width=init_width,
+    )
+    metropolis = Metropolis(wf_ansatz=wf_ansatz)
+    metropolis_sample = metropolis.oneshot_sample
+    metropolis_sample_batched = jax.jit(
+        jax.vmap(metropolis_sample, in_axes=(0, None, 0, None, None, 0))
+    )
+    probability_batched = (
+        jax.vmap(wf_vmapped, in_axes=(None, 0, None))(
+            params, init_x_batched, state_indices
+        )
+        ** 2
+    )
+    xs = init_x_batched
+
+    print("Thermalization...")
+    pmove = 0
+    t0 = time.time()
+    key, xs, probability_batched, step_size, pmove = mcmc(
+        steps=thermal_step,
+        num_substeps=num_substeps,
+        metropolis_sampler_batched=metropolis_sample_batched,
+        key=key,
+        xs_batched=xs,
+        state_indices=state_indices,
+        params=params,
+        probability_batched=probability_batched,
+        mc_step_size=step_size,
+        pmove=pmove,
+    )
+    t1 = time.time()
+    time_cost = t1 - t0
+    print(
+        f"After Thermalization:\tpmove {pmove:.2f}\t"
+        f"step_size={step_size:.4f}\ttime={time_cost:.2f}s",
+        flush=True,
+    )
+
+    # Loss function
+    loss_energy = make_loss(
+        wf_ansatz=wf_ansatz,
+        local_energy_estimator=energy_estimator.local_energy,
+        state_indices=state_indices,
+    )
+    loss_and_grad = jax.jit(jax.value_and_grad(loss_energy, argnums=0, has_aux=True))
+    (loss, energies), gradients = loss_and_grad(params, xs)
+    print(f"After MCMC, with initial network, loss={loss:.2f}")
+
+    # Optimizer
+    optimizer = optax.adam(init_learning_rate)
+    opt_state = optimizer.init(params)
+
+    # Training
+    update_obj = Update(
+        mcmc_steps=mc_steps,
+        state_indices=state_indices,
+        batch_size=batch_size,
+        num_substeps=num_substeps,
+        metropolis_sampler_batched=metropolis_sample_batched,
+        loss_and_grad=loss_and_grad,
+        optimizer=optimizer,
+        acc_steps=acc_steps,
+    )
+    update = jax.jit(update_obj.update)
+    loss_energy_list = []
+    energy_std_list = []
+    if savefig:  # not in notebook
+        for i in range(iterations):
+            t0 = time.time()
+            key, subkey = jax.random.split(key)
+            (
+                loss_energy,
+                energy_std,
+                xs,
+                probability_batched,
+                params,
+                opt_state,
+                pmove,
+                step_size,
+            ) = update(
+                subkey,
+                xs,
+                probability_batched,
+                step_size,
+                params,
+                opt_state,
+            )
+            t1 = time.time()
+            print(
+                f"Iter:{i}, LossE={loss_energy:.5f}({energy_std:.5f})"
+                f"\t pmove={pmove:.2f}\tstepsize={step_size:.4f}"
+                f"\t time={(t1-t0):.2f}s"
+            )
+            loss_energy_list.append(loss_energy)
+            energy_std_list.append(energy_std)
+    else:  # in notebook
+        for i in tqdm.tqdm(range(iterations)):
+            key, subkey = jax.random.split(key)
+            (
+                loss_energy,
+                energy_std,
+                xs,
+                probability_batched,
+                params,
+                opt_state,
+                pmove,
+                step_size,
+            ) = update(
+                subkey,
+                xs,
+                probability_batched,
+                step_size,
+                params,
+                opt_state,
+            )
+            loss_energy_list.append(loss_energy)
+            energy_std_list.append(energy_std)
+
+    # Training Curve
+    if total_num_of_states == 1:
+        expectedenergy = 0.194
+    plot_step = 10
+    plt.figure()
+    plt.errorbar(
+        range(iterations)[::plot_step],
+        loss_energy_list[::plot_step],
+        energy_std_list[::plot_step],
+        label="loss",
+        fmt="o",
+        markersize=1,
+        capsize=0.4,
+        elinewidth=0.3,
+        linestyle="none",
+    )
+    if total_num_of_states == 1:
+        plt.plot([0, iterations], [expectedenergy, expectedenergy], label="ref")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss,E")
+    plt.xscale("log")
+    plt.legend()
+    if savefig:
+        plt.savefig(f"{os.path.join(figure_save_path, "Training.png")}")
+        print("Figure Saved.")
+    else:
+        plt.show()
+    plt.close()
+
+    # Finally Plotting Probability Density
+    print("Probability Density (Trained)")
+
+    # Finite Differential Method
+    # which would be <exact> if our mesh intervals are small enough
+    H = buildH(Vpot, xmesh, Nmesh, mesh_interval)
+    exact_eigenvalues, exact_eigenvectors = scipy.linalg.eigh(H)
+
+    plt.figure()
+    for i in state_indices:
+        wf_on_mesh = jax.vmap(wf_ansatz, in_axes=(None, 0, None))(params, xmesh, i)
+        normalize_factor = (wf_on_mesh**2).sum() * mesh_interval
+        prob_density = wf_on_mesh**2 / normalize_factor
+        plt.plot(xmesh, prob_density, label=f"VMC-n={i}", lw=2)
+
+        exact_wf_on_mesh = exact_eigenvectors[:, i]
+        normalize_factor = (exact_wf_on_mesh**2).sum() * mesh_interval
+        exact_prob_density = exact_wf_on_mesh**2 / normalize_factor
+        plt.plot(xmesh, exact_prob_density, "-.", label=f"Exact-n={i}", lw=1.75)
+    plt.xlim([-1.5, 1.5])
+    plt.legend()
+    plt.ylabel(r"$\rho$")
+    plt.title("Probability Density (Trained and Compare)")
+    if savefig:
+        plt.savefig(
+            f"{os.path.join(figure_save_path, "ProbabilityDensityAfterTraining.png")}"
+        )
+        print("Figure Saved.")
+    else:
+        plt.show()
+    plt.close()
+
+    # Inference
+    print("...Inferencing...")
+    key, subkey = jax.random.split(key)
+    xs_inference = init_batched_x(
+        key=subkey,
+        batch_size=inference_batch_size,
+        num_of_orbs=state_indices.shape[0],
+        init_width=init_width,
+    )
+    probability_batched = (
+        jax.vmap(wf_vmapped, in_axes=(None, 0, None))(
+            params, xs_inference, state_indices
+        )
+        ** 2
+    )
+    print("Thermalization...")
+    t0 = time.time()
+    key, xs_inference, probability_batched, step_size, pmove = mcmc(
+        steps=inference_thermal_step,
+        num_substeps=num_substeps,
+        metropolis_sampler_batched=metropolis_sample_batched,
+        key=key,
+        xs_batched=xs_inference,
+        state_indices=state_indices,
+        params=params,
+        probability_batched=probability_batched,
+        mc_step_size=step_size,
+        pmove=pmove,
+    )
+    t1 = time.time()
+    time_cost = t1 - t0
+    print(
+        f"After Thermalization:\tpmove {pmove:.2f}\t"
+        f"step_size={step_size:.4f}\ttime={time_cost:.2f}s",
+        flush=True,
+    )
+
+    print("Mesuring Energy...")
+    (_, energies_batched), _ = loss_and_grad(params, xs_inference)
+    energy_levels = jnp.mean(energies_batched, axis=0)
+    energy_levels_std = jnp.sqrt(
+        (jnp.mean(energies_batched**2, axis=0) - energy_levels**2)
+        / (acc_steps * batch_size)
+    )
+
+    if savefig:
+        filepath = os.path.join(figure_save_path, "EnergyLevels.txt")
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write("=" * 50)
+            f.write("\n")
+            f.write(f"VMC Result with {num_of_excitation_orbs} states:\n")
+            for i, energyi in enumerate(energy_levels):
+                f.write(f"n={i}\tenergy={energyi:.5f}({energy_levels_std[i]:.5f})\n")
+            f.write("=" * 50)
+            f.write("\n")
+            f.write(f"Exact Result with {num_of_excitation_orbs} states:\n")
+            for i, energyi in enumerate(exact_eigenvalues[:num_of_excitation_orbs:]):
+                f.write(f"n={i}\tenergy={energyi:.5f}\n")
+        print(f"Energy levels written to {filepath}")
+    else:
+        print("=" * 50, "\n")
+        print(f"VMC Result with {num_of_excitation_orbs} states:\n")
+        for i, energyi in enumerate(energy_levels):
+            print(f"n={i}\tenergy={energyi:.5f}({energy_levels_std[i]:.5f})\n")
+        print("=" * 50, "\n")
+        print(f"Exact Result with {num_of_excitation_orbs} states:\n")
+        for i, energyi in enumerate(exact_eigenvalues[:num_of_excitation_orbs:]):
+            print(f"n={i}\tenergy={energyi:.5f}\n")
+
+    if total_num_of_states == 1:
+        print("=======================GS=========================")
+    else:
+        print("======================================")
+        print(f"First {num_of_excitation_orbs} Excitation States")
+        print("======================================")
