@@ -4,4 +4,6 @@ MLSummerSchoolVienna2022/
 UCAS_QMteaching/
 __pycache__/
 node_modules/
+package-lock.json
+package.json
 .pytest_cache/
