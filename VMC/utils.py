@@ -16,10 +16,6 @@ import tqdm.notebook as tqdm
 jax.config.update("jax_enable_x64", True)
 
 
-def Vpot(x):
-    return 3 * x**4 + x**3 / 2 - 3 * x**2
-
-
 def buildH(
     Vpot: callable,
     xmesh: np.ndarray,
@@ -238,6 +234,7 @@ class EnergyEstimator:
             local_potential: the local potential energy.
         """
         local_potentials = 3 * xs**4 + xs**3 / 2 - 3 * xs**2
+        # local_potentials = 3 * xs**4  - 3 * xs**2
         return local_potentials
 
     def local_energy(
@@ -540,14 +537,21 @@ def make_loss(
         """Custom Jacobian-vector product for unbiased local energy gradients."""
         params, batched_xs = primals
         loss, local_energy = total_energy(params, batched_xs)
+        # only mean over batch dimension
+        energy_expectation_per_orb = jnp.mean(
+            local_energy,
+            axis=0,
+        )
+        diff = local_energy - energy_expectation_per_orb
 
         def _batch_wf(params, batched_xs):
             return batch_wf(params, batched_xs, state_indices)
 
+        # local_energy: (batch, num_of_orbs)
         psi_primal, psi_tangent = jax.jvp(_batch_wf, primals, tangents)
         primals_out = loss, local_energy
         tangents_out = (
-            jnp.mean(2 * jnp.sum(psi_tangent * local_energy, axis=-1)),
+            jnp.sum(2 * jnp.mean(psi_tangent * diff, axis=0)),
             local_energy,
         )
 
@@ -749,8 +753,8 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
     inference_batch_size = args["inference_batch_size"]
     inference_thermal_step = args["inference_thermal_step"]
     figure_save_path = args["figure_save_path"]
+    log_domain = args["log_domain"]
 
-    log_domain = True
     num_of_excitation_orbs = total_num_of_states
     state_indices = np.arange(total_num_of_states)
 
@@ -956,9 +960,14 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
             loss_energy_list.append(loss_energy)
             energy_std_list.append(energy_std)
 
+    # Finite Differential Method
+    # which would be <exact> if our mesh intervals are small enough
+    potential_func = energy_estimator.local_potential_energy
+    H = buildH(potential_func, xmesh, Nmesh, mesh_interval)
+    exact_eigenvalues, exact_eigenvectors = scipy.linalg.eigh(H)
+
     # Training Curve
-    if total_num_of_states == 1:
-        expectedenergy = 0.194
+    expectedenergy = np.sum(exact_eigenvalues[:total_num_of_states:])
     plot_step = 10
     plt.figure()
     plt.errorbar(
@@ -972,8 +981,7 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
         elinewidth=0.3,
         linestyle="none",
     )
-    if total_num_of_states == 1:
-        plt.plot([0, iterations], [expectedenergy, expectedenergy], label="ref")
+    plt.plot([0, iterations], [expectedenergy, expectedenergy], label="ref")
     plt.xlabel("Epoch")
     plt.ylabel("Loss,E")
     plt.xscale("log")
@@ -985,14 +993,22 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
         plt.show()
     plt.close()
 
+    # Plotting Potential
+    print("Plotting Potential")
+    plt.figure()
+    plt.plot(xmesh, [potential_func(x) for x in xmesh], "k-", lw=2, label="Potential")
+    plt.xlim([-2, 2])
+    plt.legend()
+    plt.title("Potential")
+    if savefig:
+        plt.savefig(f"{os.path.join(figure_save_path, "Potential.png")}")
+        print("Figure Saved.")
+    else:
+        plt.show()
+    plt.close()
+
     # Finally Plotting Probability Density
     print("Probability Density (Trained)")
-
-    # Finite Differential Method
-    # which would be <exact> if our mesh intervals are small enough
-    H = buildH(Vpot, xmesh, Nmesh, mesh_interval)
-    exact_eigenvalues, exact_eigenvectors = scipy.linalg.eigh(H)
-
     plt.figure()
     for i in state_indices:
         wf_on_mesh = jax.vmap(wf_ansatz, in_axes=(None, 0, None))(params, xmesh, i)

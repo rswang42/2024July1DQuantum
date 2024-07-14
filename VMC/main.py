@@ -20,15 +20,22 @@ def main():
         default="1",
         help="total number of states",
     )
+    parser.add_argument(
+        "--log_domain", type=bool, default=True, help="True for working in log domain"
+    )
     input_args = parser.parse_args()
 
     total_num_of_states = input_args.n
+    log_domain = input_args.log_domain
 
     # Plotting Settings
     plt.rcParams["figure.figsize"] = [8, 6]
     plt.rcParams["figure.dpi"] = 600
 
     key = jax.random.PRNGKey(42)
+
+    version = "loss-gradient-SumDiffPerOrb"
+    # version = "testDiyPotential"
 
     if total_num_of_states <= 0:
         raise ValueError("Total Number of states must larger than 0!")
@@ -44,12 +51,12 @@ def main():
         step_size = 1.5
         num_substeps = 1  # DONT MOVE!
         init_width = 1.5
-        mlp_width = 3
+        mlp_width = 20
         mlp_depth = 3
         init_learning_rate = 2e-2
-        iterations = 10000
-        figure_save_path = "./figure/GS/"
-        inference_batch_size = 1000
+        iterations = 5000
+        figure_save_path = f"./figure/{version}/GS/"
+        inference_batch_size = 5000
         inference_thermal_step = 50
     else:
         # System settings
@@ -61,11 +68,11 @@ def main():
         num_substeps = 1  # DONT MOVE!
         init_width = 3.0
         mlp_width = 3
-        mlp_depth = 5
+        mlp_depth = 3
         init_learning_rate = 2e-2
-        iterations = 100000
-        figure_save_path = f"./figure/Excit{total_num_of_states}/"
-        inference_batch_size = 10000
+        iterations = 5000
+        figure_save_path = f"./figure/{version}/Excit{total_num_of_states}/"
+        inference_batch_size = 5000
         inference_thermal_step = 50
 
     # End of configuration
@@ -86,6 +93,7 @@ def main():
         "inference_batch_size": inference_batch_size,
         "inference_thermal_step": inference_thermal_step,
         "figure_save_path": figure_save_path,
+        "log_domain": log_domain,
     }
 
     training_kernel(

@@ -17,7 +17,7 @@ class TestOrthogonal(unittest.TestCase):
 
     def setUp(self) -> None:
         key = jax.random.PRNGKey(42)
-        self.model_flow = MLPFlow(out_dims=1)
+        self.model_flow = MLPFlow(out_dims=1, mlp_width=3, mlp_depth=3)
         key, subkey = jax.random.split(key)
         x_dummy = jax.random.normal(subkey, dtype=jnp.float64)  # Dummy input data
         key, subkey = jax.random.split(key)
