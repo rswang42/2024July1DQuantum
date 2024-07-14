@@ -37,7 +37,7 @@ def main():
 
     if total_num_of_states == 1:
         # System settings
-        batch_size = 500
+        batch_size = 2000
         thermal_step = 20
         acc_steps = 2
         mc_steps = 20
@@ -47,25 +47,25 @@ def main():
         mlp_width = 3
         mlp_depth = 3
         init_learning_rate = 2e-2
-        iterations = 6000
+        iterations = 10000
         figure_save_path = "./figure/GS/"
-        inference_batch_size = 10000
+        inference_batch_size = 1000
         inference_thermal_step = 50
     else:
         # System settings
-        batch_size = 5000
+        batch_size = 2000
         thermal_step = 20
         acc_steps = 2
-        mc_steps = 100
+        mc_steps = 50
         step_size = 1.5
         num_substeps = 1  # DONT MOVE!
         init_width = 3.0
-        mlp_width = 6
-        mlp_depth = 10
+        mlp_width = 3
+        mlp_depth = 5
         init_learning_rate = 2e-2
-        iterations = 50000
+        iterations = 100000
         figure_save_path = f"./figure/Excit{total_num_of_states}/"
-        inference_batch_size = 20000
+        inference_batch_size = 10000
         inference_thermal_step = 50
 
     # End of configuration

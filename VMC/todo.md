@@ -1,0 +1,3 @@
+- [x] Work in log domain
+- [x] Correct loss gradient in FermiNet style formula and implementation
+- [x] Implement loss as in m*, in which the gradient is only calculated with Eloc but not Eloc - expectation_of_Eloc.
