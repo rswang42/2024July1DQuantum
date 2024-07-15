@@ -62,8 +62,8 @@ def main():
     thermal_step = 20
     acc_steps = 1
     mc_steps = 50
-    step_size = 1.5
-    init_width = 1.5
+    step_size = 1.0
+    init_width = 3.0
     mlp_width = 5
     mlp_depth = 3
     init_learning_rate = 2e-2

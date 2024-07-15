@@ -4,6 +4,7 @@ from functools import partial
 import time
 import os
 
+import jax.ad_checkpoint
 import matplotlib.pyplot as plt
 import numpy as np
 import jax
@@ -102,7 +103,11 @@ def log_wf_base(
 
 
 class WFAnsatz:
-    """The flow wave function ansatz"""
+    """The flow wave function ansatz
+
+    Attributes:
+        self.flow: the normalizing flow network
+    """
 
     def __init__(
         self,
@@ -171,7 +176,13 @@ class WFAnsatz:
 
 
 class EnergyEstimator:
-    """Energy Estimator"""
+    """Energy Estimator
+
+    Attributes:
+        self.wf_ansatz: the callable wave function ansatz
+            signature: (params, x, n)
+        self.log_gomain: True for working in log domain.
+    """
 
     def __init__(
         self,
@@ -234,7 +245,6 @@ class EnergyEstimator:
             local_potential: the local potential energy.
         """
         local_potentials = 3 * xs**4 + xs**3 / 2 - 3 * xs**2
-        # local_potentials = 3 * xs**4  - 3 * xs**2
         return local_potentials
 
     def local_energy(
@@ -269,6 +279,11 @@ class Metropolis:
     """The Metropolis Algorithm
     iterating the positions of MCMC walkers according
     to the Metropolis algorithm.
+
+    Attributes:
+        self.wf_ansatz: the callable wave function ansatz
+            signature: (params, x, n)
+        self.log_gomain: True for working in log domain.
     """
 
     def __init__(
@@ -288,8 +303,8 @@ class Metropolis:
         step_size: float,
         key: jax.random.PRNGKey,
     ) -> list[
-        float | jax.Array,
-        float,
+        jax.Array,
+        jax.Array,
         int,
     ]:
         """The one-step Metropolis update
@@ -480,7 +495,7 @@ def make_loss(
     clip_factor: float | None,
     wf_clip_factor: float | None,
     log_domain=True,
-):
+) -> callable:
     """Copied from Ferminet.
 
     Creates the loss function, including custom gradients.
@@ -497,6 +512,13 @@ def make_loss(
         of orbitals: ground state: 0
                     first excitation state: 1
                     second excitation state: 2
+    clip_factor: the gradient clipping factor for energy part. None for
+        not making energy clipping.
+    wf_clip_factor: the gradient clipping factor for wavefunction part. None
+        for not making wavefunction clipping.
+    log_domain: True for work in log domain (wavefunction and
+            probability)
+
     Returns:
         total_energy: function which evaluates the both the loss as the mean of the
         local_energies, and the local energies. With custom gradients, accounting
@@ -581,6 +603,23 @@ class Loss:
     """The original total loss function
     as 'it is' and the custom loss function, custom_loss
     ONLY for Gradient Estimator!
+
+    Attributes:
+        self.state_indices:  (num_of_orbs,)the array containing
+                the excitations in each bath, for example,
+                [0,1,2] represents there are totally 3 number
+                of orbitals: ground state: 0
+                            first excitation state: 1
+                            second excitation state: 2
+        self.batch_local_energy: the batched local energy estimator.
+        self.log_wf_vmapped: the log domain wavefunction callable
+            vmapped on ORBITALS!
+        self.batch_wf: the logg domain wavefunction callable
+            vmapped one BATCH!
+        self.clip_factor: the gradient clipping factor for energy part. None for
+            not making energy clipping.
+        self.wf_clip_factor: the gradient clipping factor for wavefunction part. None
+            for not making wavefunction clipping.
     """
 
     def __init__(
@@ -592,6 +631,27 @@ class Loss:
         wf_clip_factor: float | None,
         log_domain=True,
     ) -> None:
+        """Init
+
+        Args:
+            wf_ansatz: function, signature (params, x, n), which evaluates wavefunction
+                at a single MCMC configuration given the network parameters.
+            local_energy_estimator: signature (params, xs, state_indices), here
+                xs refers to the x coordinates in one single batch, xs has shape
+                (num_of_orb,)
+            state_indices: (num_of_orbs,)the array containing
+                the excitations in each bath, for example,
+                [0,1,2] represents there are totally 3 number
+                of orbitals: ground state: 0
+                            first excitation state: 1
+                            second excitation state: 2
+            clip_factor: the gradient clipping factor for energy part. None for
+                not making energy clipping.
+            wf_clip_factor: the gradient clipping factor for wavefunction part. None
+                for not making wavefunction clipping.
+            log_domain: True for work in log domain (wavefunction and
+                    probability)
+        """
         self.state_indices = state_indices
         self.batch_local_energy = jax.vmap(
             local_energy_estimator, in_axes=(None, 0, None), out_axes=0
@@ -895,6 +955,7 @@ class MLPFlow(flax_nn.Module):
 
 def training_kernel(args: dict, savefig: bool = True) -> None:
     """Training Kernel"""
+
     # Initialize flow
     key = args["key"]
     batch_size = args["batch_size"]
@@ -944,6 +1005,17 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
 
         if wf_clip_factor:
             raise NotImplementedError("wavefunction clip not implemented!")
+
+        figure_save_path = os.path.join(
+            figure_save_path,
+            f"batch_{batch_size}/",
+            f"thrstp_{thermal_step}/",
+            f"acc_{acc_steps}/",
+            f"mcstp_{mc_steps}/",
+            f"mlpwid_{mlp_width}/",
+            f"mlpdep_{mlp_depth}/",
+            f"initlr_{init_learning_rate:.4f}/",
+        )
 
         if not os.path.isdir(figure_save_path):
             print(f"Creating Directory at {figure_save_path}")
@@ -1192,7 +1264,7 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
     )
     axs[1].set_xlabel("Epoch")
     axs[1].set_ylabel("Loss,E")
-    axs[1].set_ylim([4 * expectedenergy / 5, 2.5 * expectedenergy])
+    axs[1].set_ylim([4 * expectedenergy / 5, 1.5 * expectedenergy])
     axs[1].set_title("Last 500 iters zoom in")
     plt.legend()
     if savefig:
@@ -1233,7 +1305,7 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
         normalize_factor = (exact_wf_on_mesh**2).sum() * mesh_interval
         exact_prob_density = exact_wf_on_mesh**2 / normalize_factor
         plt.plot(xmesh, exact_prob_density, "-.", label=f"Exact-n={i}", lw=1.75)
-    plt.xlim([-1.5, 1.5])
+    plt.xlim([-2.0, 2.0])
     plt.legend()
     plt.ylabel(r"$\rho$")
     plt.title("Probability Density (Trained and Compare)")
