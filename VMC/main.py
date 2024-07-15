@@ -9,6 +9,10 @@ from VMC.utils import training_kernel
 
 jax.config.update("jax_enable_x64", True)
 
+# Plotting Settings
+plt.rcParams["figure.figsize"] = [8, 6]
+plt.rcParams["figure.dpi"] = 600
+
 
 def main():
     """Main function"""
@@ -23,57 +27,57 @@ def main():
     parser.add_argument(
         "--log_domain", type=bool, default=True, help="True for working in log domain"
     )
+    parser.add_argument(
+        "--ferminet_loss",
+        action="store_true",
+        help="Set this to use FermiNet style loss.",
+    )
+    parser.add_argument(
+        "--clip", type=float, default=None, help="Energy Gradient Clipping Factor"
+    )
+    parser.add_argument(
+        "--wfclip",
+        type=float,
+        default=None,
+        help="WaveFunction Gradient Clipping Factor (to network params)",
+    )
     input_args = parser.parse_args()
 
     total_num_of_states = input_args.n
     log_domain = input_args.log_domain
-
-    # Plotting Settings
-    plt.rcParams["figure.figsize"] = [8, 6]
-    plt.rcParams["figure.dpi"] = 600
-
-    key = jax.random.PRNGKey(42)
-
-    version = "loss-gradient-SumDiffPerOrb"
-    # version = "testDiyPotential"
+    ferminet_loss = input_args.ferminet_loss
+    clip_factor = input_args.clip
+    wf_clip_factor = input_args.wfclip
 
     if total_num_of_states <= 0:
         raise ValueError("Total Number of states must larger than 0!")
-    elif not isinstance(total_num_of_states, int):
+    if not isinstance(total_num_of_states, int):
         raise TypeError("total number of states must be integer!")
 
+    version = "test"
+    # version = "test/testplot"
+
+    # Global System settings
+    batch_size = 2000
+    thermal_step = 20
+    acc_steps = 1
+    mc_steps = 50
+    step_size = 1.5
+    init_width = 1.5
+    mlp_width = 5
+    mlp_depth = 3
+    init_learning_rate = 2e-2
+    iterations = 10000
+    inference_batch_size = 5000
+    inference_thermal_step = 50
+
+    # Specific setting
     if total_num_of_states == 1:
-        # System settings
-        batch_size = 2000
-        thermal_step = 20
-        acc_steps = 2
-        mc_steps = 20
-        step_size = 1.5
-        num_substeps = 1  # DONT MOVE!
-        init_width = 1.5
-        mlp_width = 20
-        mlp_depth = 3
-        init_learning_rate = 2e-2
-        iterations = 5000
         figure_save_path = f"./figure/{version}/GS/"
-        inference_batch_size = 5000
-        inference_thermal_step = 50
     else:
-        # System settings
-        batch_size = 2000
-        thermal_step = 20
-        acc_steps = 2
-        mc_steps = 50
-        step_size = 1.5
-        num_substeps = 1  # DONT MOVE!
-        init_width = 3.0
-        mlp_width = 3
-        mlp_depth = 3
-        init_learning_rate = 2e-2
-        iterations = 5000
         figure_save_path = f"./figure/{version}/Excit{total_num_of_states}/"
-        inference_batch_size = 5000
-        inference_thermal_step = 50
+
+    key = jax.random.PRNGKey(42)
 
     # End of configuration
     training_args = {
@@ -84,7 +88,6 @@ def main():
         "acc_steps": acc_steps,
         "mc_steps": mc_steps,
         "step_size": step_size,
-        "num_substeps": num_substeps,
         "init_width": init_width,
         "mlp_width": mlp_width,
         "mlp_depth": mlp_depth,
@@ -94,6 +97,9 @@ def main():
         "inference_thermal_step": inference_thermal_step,
         "figure_save_path": figure_save_path,
         "log_domain": log_domain,
+        "ferminet_loss": ferminet_loss,
+        "clip_factor": clip_factor,
+        "wf_clip_factor": wf_clip_factor,
     }
 
     training_kernel(

@@ -350,7 +350,6 @@ class Metropolis:
 
 def mcmc(
     steps: int,
-    num_substeps: int,
     metropolis_sampler_batched: callable,
     key: jax.random.PRNGKey,
     xs_batched: jax.Array,
@@ -366,7 +365,6 @@ def mcmc(
 
     Args:
         steps: the steps to perform
-        num_substeps: the mcmc substep number.
         metropolis_sampler_batched: the batched metropolis sampler.
         key: the jax.PRNGkey
         xs_batched: (num_of_batch,num_of_orbs,) the batched 1D coordinate
@@ -404,33 +402,35 @@ def mcmc(
     if log_domain:
         print("Note: Working in log domain...")
 
+    batch_size = xs_batched.shape[0]
+
     @jax.jit
     def _body_func(i, val):
         """MCMC Body function"""
-        key, xs_batched, probability_batched, mc_step_size, pmove = val
-        batch_size = xs_batched.shape[0]
+        key, xs_batched, probability_batched, mc_step_size, accept_count = val
         key, batch_keys = key_batch_split(key, batch_size)
-        xs_batched, probability_batched, accept_count = metropolis_sampler_batched(
-            xs_batched,
-            state_indices,
-            probability_batched,
-            params,
-            mc_step_size,
-            batch_keys,
+        xs_batched, probability_batched, current_accept_count = (
+            metropolis_sampler_batched(
+                xs_batched,
+                state_indices,
+                probability_batched,
+                params,
+                mc_step_size,
+                batch_keys,
+            )
         )
-        pmove = np.sum(accept_count) / (
-            num_substeps * batch_size * state_indices.shape[0]
-        )
-        mc_step_size = jnp.where(
-            pmove > 0.5,
-            mc_step_size * 1.1,
-            mc_step_size * 0.9,
-        )
-        return key, xs_batched, probability_batched, mc_step_size, pmove
+        accept_count += jnp.sum(current_accept_count)
+        return key, xs_batched, probability_batched, mc_step_size, accept_count
 
     mcmc_init_val = (key, xs_batched, probability_batched, mc_step_size, 0)
-    key, xs_batched, probability_batched, mc_step_size, pmove = jax.lax.fori_loop(
-        0, steps, _body_func, mcmc_init_val
+    key, xs_batched, probability_batched, mc_step_size, accept_count = (
+        jax.lax.fori_loop(0, steps, _body_func, mcmc_init_val)
+    )
+    pmove = accept_count / (batch_size * state_indices.shape[0] * steps)
+    mc_step_size = jnp.where(
+        pmove > 0.5,
+        mc_step_size * 1.1,
+        mc_step_size * 0.9,
     )
     return key, xs_batched, probability_batched, mc_step_size, pmove
 
@@ -477,6 +477,8 @@ def make_loss(
     wf_ansatz: callable,
     local_energy_estimator: callable,
     state_indices: np.ndarray,
+    clip_factor: float | None,
+    wf_clip_factor: float | None,
     log_domain=True,
 ):
     """Copied from Ferminet.
@@ -500,6 +502,9 @@ def make_loss(
         local_energies, and the local energies. With custom gradients, accounting
         for derivatives in the probability distribution.
     """
+    if wf_clip_factor:
+        raise NotImplementedError("wavefunction clip not implemented!")
+
     batch_local_energy = jax.vmap(
         local_energy_estimator, in_axes=(None, 0, None), out_axes=0
     )
@@ -542,22 +547,165 @@ def make_loss(
             local_energy,
             axis=0,
         )
+
+        if clip_factor:
+            energy_clip_tv = jnp.mean(
+                jnp.abs(local_energy - energy_expectation_per_orb), axis=0
+            )
+            local_energy = jnp.clip(
+                local_energy,
+                energy_expectation_per_orb - clip_factor * energy_clip_tv,
+                energy_expectation_per_orb + clip_factor * energy_clip_tv,
+            )
+
         diff = local_energy - energy_expectation_per_orb
 
         def _batch_wf(params, batched_xs):
             return batch_wf(params, batched_xs, state_indices)
 
         # local_energy: (batch, num_of_orbs)
+        # diff: (batch, num_of_orbs)
         psi_primal, psi_tangent = jax.jvp(_batch_wf, primals, tangents)
         primals_out = loss, local_energy
         tangents_out = (
-            jnp.sum(2 * jnp.mean(psi_tangent * diff, axis=0)),
+            2 * jnp.sum(jnp.mean(psi_tangent * diff, axis=0)),
             local_energy,
         )
 
         return primals_out, tangents_out
 
     return total_energy
+
+
+class Loss:
+    """The original total loss function
+    as 'it is' and the custom loss function, custom_loss
+    ONLY for Gradient Estimator!
+    """
+
+    def __init__(
+        self,
+        wf_ansatz: callable,
+        local_energy_estimator: callable,
+        state_indices: np.ndarray,
+        clip_factor: float | None,
+        wf_clip_factor: float | None,
+        log_domain=True,
+    ) -> None:
+        self.state_indices = state_indices
+        self.batch_local_energy = jax.vmap(
+            local_energy_estimator, in_axes=(None, 0, None), out_axes=0
+        )
+        if log_domain:
+            log_wf = wf_ansatz
+        else:
+            log_wf = lambda params, x, n: jnp.log(jnp.abs(wf_ansatz(params, x, n)))
+        # vmapped wavefunction: signature (params, xs, state_indices)
+        self.log_wf_vmapped = jax.vmap(log_wf, in_axes=(None, 0, 0))
+        # batch_wf: signature (params, batched_xs, state_indices)
+        self.batch_wf = jax.vmap(
+            self.log_wf_vmapped, in_axes=(None, 0, None), out_axes=0
+        )
+        self.clip_factor = clip_factor
+        self.wf_clip_factpr = wf_clip_factor
+        if wf_clip_factor:
+            raise NotImplementedError(
+                "Wavefunction clip factor for Hydrogen Type loss not implemented!"
+            )
+
+    def total_energy(
+        self, params: dict, batched_xs: jax.Array
+    ) -> tuple[float, np.ndarray]:
+        """Total energy of an ensemble (batched)
+
+        Args:
+            params: the network parameters
+            batched_xs: (num_of_batch, num_of_orbs,)
+                the batched 1D coordinate of the particle(s).
+                The xs are in corresponding order as in state_indices.
+
+        Returns:
+            loss: the total loss of the system, meaned over batch.
+            e_l: (batch,num_of_orbs,) the local energy of each state.
+        """
+        e_l = self.batch_local_energy(params, batched_xs, self.state_indices)
+        loss = jnp.mean(jnp.sum(e_l, axis=-1))
+        return loss, e_l
+
+    def custom_loss(self, params: dict, batched_xs: jax.Array) -> jax.Array:
+        """The custom loss function
+        Then the gradient towards params could be
+        accessed by DIRECTLY making grad to this function!
+        NOTE: For Gradient estimator ONLY!
+
+        Args:
+            params: the network parameters
+            batched_xs: (num_of_batch, num_of_orbs,)
+                the batched 1D coordinate of the particle(s).
+                The xs are in corresponding order as in state_indices.
+
+        Returns:
+            custom_loss: the custom defined loss.
+        """
+
+        def _batch_wf(params, batched_xs):
+            return self.batch_wf(params, batched_xs, self.state_indices)
+
+        # local_energis: (batch, num_of_orbs)
+        loss, local_energies = jax.lax.stop_gradient(
+            self.total_energy(params, batched_xs)
+        )
+        # logpsix: (batch, num_of_orbs)
+        logpsix = _batch_wf(params, batched_xs)
+        energies_batch_average = jnp.mean(local_energies, axis=0)  # (num_of_orbs,)
+
+        if self.clip_factor:
+            # For Control Variate and clipping
+            # Clipping may be important for nodal area!
+            clip_factor = self.clip_factor
+            tv = jnp.mean(
+                jnp.abs(local_energies - energies_batch_average), axis=0
+            )  # (num_of_orbs,)
+            local_energies_clipped = jnp.clip(
+                local_energies,
+                energies_batch_average - clip_factor * tv,
+                energies_batch_average + clip_factor * tv,
+            )
+            custom_loss = 2 * jnp.sum(
+                jnp.mean(
+                    (logpsix * (local_energies_clipped - energies_batch_average)),
+                    axis=0,
+                )
+            )
+        else:
+            custom_loss = 2 * jnp.sum(
+                jnp.mean((logpsix * (local_energies - energies_batch_average)), axis=0)
+            )
+        return custom_loss
+
+    def loss_and_grad(
+        self,
+        params: dict,
+        batched_xs: jax.Array,
+    ) -> tuple[tuple[jax.Array, jax.Array], dict]:
+        """Manually implemented loss_and_grad to
+        compatible with previous FermiNet style loss,
+        jax.value_and_grad(loss_energy, argnums=0, has_aux=True)
+
+        Args:
+            params: the network parameters
+            batched_xs: (num_of_batch, num_of_orbs,)
+                the batched 1D coordinate of the particle(s).
+                The xs are in corresponding order as in state_indices.
+
+        Returns:
+            loss: the total loss
+            energies: (batch, num_of_orbs) the local energies
+            gradients: dict, the gradients to network parameters.
+        """
+        gradients = jax.grad(self.custom_loss, argnums=0)(params, batched_xs)
+        loss, energies = jax.lax.stop_gradient(self.total_energy(params, batched_xs))
+        return ((loss, energies), gradients)
 
 
 class Update:
@@ -568,7 +716,6 @@ class Update:
         mcmc_steps: int,
         state_indices: np.ndarray,
         batch_size: int,
-        num_substeps: int,
         metropolis_sampler_batched: callable,
         loss_and_grad: callable,
         optimizer: optax.GradientTransformation,
@@ -578,7 +725,6 @@ class Update:
         self.mcmc_steps = mcmc_steps
         self.state_indices = state_indices
         self.batch_size = batch_size
-        self.num_substeps = num_substeps
         self.metropolis_sampler_batched = metropolis_sampler_batched
         self.loss_and_grad = loss_and_grad
         self.optimizer = optimizer
@@ -640,7 +786,6 @@ class Update:
                 pmove,
             ) = mcmc(
                 steps=self.mcmc_steps,
-                num_substeps=self.num_substeps,
                 metropolis_sampler_batched=self.metropolis_sampler_batched,
                 key=key,
                 xs_batched=xs_batched,
@@ -651,8 +796,14 @@ class Update:
                 pmove=pmove,
                 log_domain=self.log_domain,
             )
-            (loss, energies), gradients = self.loss_and_grad(params, xs_batched)
-            grad = jax.tree.map(jnp.mean, gradients)
+            (loss_i, energies_i), gradients_i = self.loss_and_grad(params, xs_batched)
+            # grad = jax.tree.map(jnp.mean, gradients)
+            grad_i = gradients_i
+            (loss, energies, grad) = jax.tree.map(
+                lambda acc, i: acc + i,
+                (loss, energies, grad),
+                (loss_i, energies_i, grad_i),
+            )
             return (
                 loss,
                 energies,
@@ -667,7 +818,11 @@ class Update:
 
         # Only for initialization of val in jax.lax.foriloop!
         (loss, energies), gradients = self.loss_and_grad(params, xs_batched)
-        grad = jax.tree.map(jnp.mean, gradients)
+        loss = jnp.float64(0.0)
+        energies = jnp.zeros_like(energies)
+        gradients = jax.tree.map(jnp.zeros_like, gradients)
+        # grad = jax.tree.map(jnp.mean, gradients)
+        grad = gradients
         acc_init_val = (
             loss,
             energies,
@@ -691,6 +846,10 @@ class Update:
             pmove,
             params,
         ) = jax.lax.fori_loop(0, self.acc_steps, _acc_body_func, acc_init_val)
+
+        (loss, energies, grad) = jax.tree.map(
+            lambda acc: acc / self.acc_steps, (loss, energies, grad)
+        )
 
         updates, opt_state = self.optimizer.update(grad, opt_state, params)
         params = optax.apply_updates(params, updates)
@@ -744,7 +903,6 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
     acc_steps = args["acc_steps"]
     mc_steps = args["mc_steps"]
     step_size = args["step_size"]
-    num_substeps = args["num_substeps"]
     init_width = args["init_width"]
     mlp_width = args["mlp_width"]
     mlp_depth = args["mlp_depth"]
@@ -754,6 +912,9 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
     inference_thermal_step = args["inference_thermal_step"]
     figure_save_path = args["figure_save_path"]
     log_domain = args["log_domain"]
+    ferminet_loss = args["ferminet_loss"]
+    clip_factor = args["clip_factor"]
+    wf_clip_factor = args["wf_clip_factor"]
 
     num_of_excitation_orbs = total_num_of_states
     state_indices = np.arange(total_num_of_states)
@@ -770,6 +931,19 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
             figure_save_path = os.path.join(figure_save_path, "log-domain/")
         else:
             figure_save_path = os.path.join(figure_save_path, "real-domain/")
+
+        if ferminet_loss:
+            figure_save_path = os.path.join(figure_save_path, "FermiNetLoss/")
+        else:
+            figure_save_path = os.path.join(figure_save_path, "HydrogenLoss/")
+
+        if clip_factor:
+            figure_save_path = os.path.join(figure_save_path, f"clip_{clip_factor}/")
+        else:
+            figure_save_path = os.path.join(figure_save_path, "NoGradientClip/")
+
+        if wf_clip_factor:
+            raise NotImplementedError("wavefunction clip not implemented!")
 
         if not os.path.isdir(figure_save_path):
             print(f"Creating Directory at {figure_save_path}")
@@ -859,7 +1033,6 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
     t0 = time.time()
     key, xs, probability_batched, step_size, pmove = mcmc(
         steps=thermal_step,
-        num_substeps=num_substeps,
         metropolis_sampler_batched=metropolis_sample_batched,
         key=key,
         xs_batched=xs,
@@ -878,14 +1051,32 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
         flush=True,
     )
 
-    # Loss function
-    loss_energy = make_loss(
-        wf_ansatz=wf_ansatz,
-        local_energy_estimator=energy_estimator.local_energy,
-        state_indices=state_indices,
-        log_domain=log_domain,
-    )
-    loss_and_grad = jax.jit(jax.value_and_grad(loss_energy, argnums=0, has_aux=True))
+    if ferminet_loss:
+        # Loss function, FermiNet Style
+        loss_energy = make_loss(
+            wf_ansatz=wf_ansatz,
+            local_energy_estimator=energy_estimator.local_energy,
+            state_indices=state_indices,
+            clip_factor=clip_factor,
+            wf_clip_factor=wf_clip_factor,
+            log_domain=log_domain,
+        )
+        loss_and_grad = jax.jit(
+            jax.value_and_grad(loss_energy, argnums=0, has_aux=True)
+        )
+    else:
+        # Loss function, as in Hydrogen
+        loss_obj = Loss(
+            wf_ansatz=wf_ansatz,
+            local_energy_estimator=energy_estimator.local_energy,
+            state_indices=state_indices,
+            clip_factor=clip_factor,
+            wf_clip_factor=wf_clip_factor,
+            log_domain=log_domain,
+        )
+        loss_energy = loss_obj.total_energy
+        loss_and_grad = jax.jit(loss_obj.loss_and_grad)
+
     (loss, energies), gradients = loss_and_grad(params, xs)
     print(f"After MCMC, with initial network, loss={loss:.2f}")
 
@@ -898,7 +1089,6 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
         mcmc_steps=mc_steps,
         state_indices=state_indices,
         batch_size=batch_size,
-        num_substeps=num_substeps,
         metropolis_sampler_batched=metropolis_sample_batched,
         loss_and_grad=loss_and_grad,
         optimizer=optimizer,
@@ -969,8 +1159,8 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
     # Training Curve
     expectedenergy = np.sum(exact_eigenvalues[:total_num_of_states:])
     plot_step = 10
-    plt.figure()
-    plt.errorbar(
+    fig, axs = plt.subplots(2, 1, figsize=(8, 12))
+    axs[0].errorbar(
         range(iterations)[::plot_step],
         loss_energy_list[::plot_step],
         energy_std_list[::plot_step],
@@ -981,23 +1171,42 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
         elinewidth=0.3,
         linestyle="none",
     )
-    plt.plot([0, iterations], [expectedenergy, expectedenergy], label="ref")
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss,E")
-    plt.xscale("log")
+    axs[0].plot([0, iterations], [expectedenergy, expectedenergy], label="ref")
+    axs[0].set_xlabel("Epoch")
+    axs[0].set_ylabel("Loss,E")
+    axs[0].set_ylim([4 * expectedenergy / 5, 2.5 * expectedenergy])
+    axs[0].set_xscale("log")
+    axs[1].errorbar(
+        range(iterations)[-500::],
+        loss_energy_list[-500::],
+        energy_std_list[-500::],
+        label="loss",
+        fmt="o",
+        markersize=1,
+        capsize=0.4,
+        elinewidth=0.3,
+        linestyle="none",
+    )
+    axs[1].plot(
+        [iterations - 500, iterations], [expectedenergy, expectedenergy], label="ref"
+    )
+    axs[1].set_xlabel("Epoch")
+    axs[1].set_ylabel("Loss,E")
+    axs[1].set_ylim([4 * expectedenergy / 5, 2.5 * expectedenergy])
+    axs[1].set_title("Last 500 iters zoom in")
     plt.legend()
     if savefig:
         plt.savefig(f"{os.path.join(figure_save_path, "Training.png")}")
         print("Figure Saved.")
     else:
         plt.show()
-    plt.close()
 
     # Plotting Potential
     print("Plotting Potential")
     plt.figure()
     plt.plot(xmesh, [potential_func(x) for x in xmesh], "k-", lw=2, label="Potential")
     plt.xlim([-2, 2])
+    plt.ylim([-2, 10])
     plt.legend()
     plt.title("Potential")
     if savefig:
@@ -1064,7 +1273,6 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
     t0 = time.time()
     key, xs_inference, probability_batched, step_size, pmove = mcmc(
         steps=inference_thermal_step,
-        num_substeps=num_substeps,
         metropolis_sampler_batched=metropolis_sample_batched,
         key=key,
         xs_batched=xs_inference,
