@@ -443,9 +443,14 @@ def mcmc(
     )
     pmove = accept_count / (batch_size * state_indices.shape[0] * steps)
     mc_step_size = jnp.where(
-        pmove > 0.5,
+        pmove > 0.525,
         mc_step_size * 1.1,
+        mc_step_size,
+    )
+    mc_step_size = jnp.where(
+        pmove < 0.475,
         mc_step_size * 0.9,
+        mc_step_size,
     )
     return key, xs_batched, probability_batched, mc_step_size, pmove
 
@@ -945,8 +950,6 @@ class MLPFlow(flax_nn.Module):
             )
             x = flax_nn.Dense(self.mlp_width)(x)
             x = flax_nn.sigmoid(x)
-            x = flax_nn.Dense(self.mlp_width)(x)
-            x = flax_nn.sigmoid(x)
             x = flax_nn.Dense(self.out_dims)(x)
             x = _init_x + x
 
@@ -959,7 +962,7 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
     # Initialize flow
     key = args["key"]
     batch_size = args["batch_size"]
-    total_num_of_states = args["total_num_of_states"]
+    state_indices = args["state_indices"]
     thermal_step = args["thermal_step"]
     acc_steps = args["acc_steps"]
     mc_steps = args["mc_steps"]
@@ -977,17 +980,28 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
     clip_factor = args["clip_factor"]
     wf_clip_factor = args["wf_clip_factor"]
 
-    num_of_excitation_orbs = total_num_of_states
-    state_indices = np.arange(total_num_of_states)
-
-    if total_num_of_states == 1:
-        print("=======================GS=========================")
-    else:
-        print("======================================")
-        print(f"First {num_of_excitation_orbs} Excitation States")
-        print("======================================")
+    print("======================================")
+    print(f"Computed States Indices: {state_indices}")
+    print("======================================")
 
     if savefig:
+        figure_save_path = os.path.join(
+            figure_save_path,
+            f"batch_{batch_size}/",
+            f"mlpwid_{mlp_width}/",
+            f"mlpdep_{mlp_depth}/",
+            f"initlr_{init_learning_rate:.4f}/",
+            f"mcstp_{mc_steps}/",
+            f"thrstp_{thermal_step}/",
+            f"acc_{acc_steps}/",
+            f"xinitwidth_{init_width}/",
+        )
+
+        if clip_factor:
+            figure_save_path = os.path.join(figure_save_path, f"clip_{clip_factor}/")
+        else:
+            figure_save_path = os.path.join(figure_save_path, "NoGradientClip/")
+
         if log_domain:
             figure_save_path = os.path.join(figure_save_path, "log-domain/")
         else:
@@ -997,25 +1011,8 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
             figure_save_path = os.path.join(figure_save_path, "FermiNetLoss/")
         else:
             figure_save_path = os.path.join(figure_save_path, "HydrogenLoss/")
-
-        if clip_factor:
-            figure_save_path = os.path.join(figure_save_path, f"clip_{clip_factor}/")
-        else:
-            figure_save_path = os.path.join(figure_save_path, "NoGradientClip/")
-
         if wf_clip_factor:
             raise NotImplementedError("wavefunction clip not implemented!")
-
-        figure_save_path = os.path.join(
-            figure_save_path,
-            f"batch_{batch_size}/",
-            f"thrstp_{thermal_step}/",
-            f"acc_{acc_steps}/",
-            f"mcstp_{mc_steps}/",
-            f"mlpwid_{mlp_width}/",
-            f"mlpdep_{mlp_depth}/",
-            f"initlr_{init_learning_rate:.4f}/",
-        )
 
         if not os.path.isdir(figure_save_path):
             print(f"Creating Directory at {figure_save_path}")
@@ -1026,11 +1023,19 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
 
     model_flow = MLPFlow(out_dims=1, mlp_width=mlp_width, mlp_depth=mlp_depth)
     key, subkey = jax.random.split(key)
-    x_dummy = jnp.array(-1.0, dtype=jnp.float64)
+    x_dummy = jnp.array(0.0, dtype=jnp.float64)
     key, subkey = jax.random.split(key)
     params = model_flow.init(subkey, x_dummy)
+    params = jax.tree.map(
+        lambda leaf: 0.01 * jax.random.truncated_normal(subkey, -2.0, 2.0, leaf.shape),
+        params,
+    )
     # Initial Jacobian
     init_jacobian = jax.jacfwd(lambda x: model_flow.apply(params, x))(x_dummy)
+    if jnp.abs(init_jacobian - 1.0) > 0.2:
+        raise ValueError(
+            f"Init Jacobian too far from identity!\nGet init Jacobian={init_jacobian}\n"
+        )
     print(f"Init Jacobian = \n{init_jacobian}")
 
     # Initialize Wavefunction
@@ -1229,7 +1234,8 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
     exact_eigenvalues, exact_eigenvectors = scipy.linalg.eigh(H)
 
     # Training Curve
-    expectedenergy = np.sum(exact_eigenvalues[:total_num_of_states:])
+    trained_states_energy = exact_eigenvalues[state_indices]
+    expectedenergy = np.sum(trained_states_energy)
     plot_step = 10
     fig, axs = plt.subplots(2, 1, figsize=(8, 12))
     axs[0].errorbar(
@@ -1376,28 +1382,25 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
         with open(filepath, "w", encoding="utf-8") as f:
             f.write("=" * 50)
             f.write("\n")
-            f.write(f"VMC Result with {num_of_excitation_orbs} states:\n")
+            f.write(f"VMC Result with {state_indices} states:\n")
             for i, energyi in enumerate(energy_levels):
                 f.write(f"n={i}\tenergy={energyi:.5f}({energy_levels_std[i]:.5f})\n")
             f.write("=" * 50)
             f.write("\n")
-            f.write(f"Exact Result with {num_of_excitation_orbs} states:\n")
-            for i, energyi in enumerate(exact_eigenvalues[:num_of_excitation_orbs:]):
+            f.write(f"Exact Result with {state_indices} states:\n")
+            for i, energyi in enumerate(exact_eigenvalues[:state_indices:]):
                 f.write(f"n={i}\tenergy={energyi:.5f}\n")
         print(f"Energy levels written to {filepath}")
     else:
         print("=" * 50, "\n")
-        print(f"VMC Result with {num_of_excitation_orbs} states:\n")
+        print(f"VMC Result with {state_indices} states:\n")
         for i, energyi in enumerate(energy_levels):
             print(f"n={i}\tenergy={energyi:.5f}({energy_levels_std[i]:.5f})\n")
         print("=" * 50, "\n")
-        print(f"Exact Result with {num_of_excitation_orbs} states:\n")
-        for i, energyi in enumerate(exact_eigenvalues[:num_of_excitation_orbs:]):
+        print(f"Exact Result with {state_indices} states:\n")
+        for i, energyi in enumerate(exact_eigenvalues[:state_indices:]):
             print(f"n={i}\tenergy={energyi:.5f}\n")
 
-    if total_num_of_states == 1:
-        print("=======================GS=========================")
-    else:
-        print("======================================")
-        print(f"First {num_of_excitation_orbs} Excitation States")
-        print("======================================")
+    print("======================================")
+    print(f"Computed States Indices: {state_indices}")
+    print("======================================")

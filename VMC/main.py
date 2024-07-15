@@ -19,12 +19,6 @@ def main():
     parser = argparse.ArgumentParser(description="1D VMC")
 
     parser.add_argument(
-        "--n",
-        type=int,
-        default="1",
-        help="total number of states",
-    )
-    parser.add_argument(
         "--log_domain", type=bool, default=True, help="True for working in log domain"
     )
     parser.add_argument(
@@ -41,41 +35,47 @@ def main():
         default=None,
         help="WaveFunction Gradient Clipping Factor (to network params)",
     )
+    parser.add_argument(
+        "--state_indices",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Choose the states' quamtum number to be trained."
+        "0 for ground state, 1 for the first excited state, etc.",
+    )
     input_args = parser.parse_args()
 
-    total_num_of_states = input_args.n
     log_domain = input_args.log_domain
     ferminet_loss = input_args.ferminet_loss
     clip_factor = input_args.clip
     wf_clip_factor = input_args.wfclip
+    state_indices = input_args.state_indices
+
+    total_num_of_states = len(state_indices)
 
     if total_num_of_states <= 0:
         raise ValueError("Total Number of states must larger than 0!")
     if not isinstance(total_num_of_states, int):
         raise TypeError("total number of states must be integer!")
 
-    version = "test"
+    version = "test/sigmoid"
     # version = "test/testplot"
 
     # Global System settings
-    batch_size = 2000
+    batch_size = 4000
     thermal_step = 20
     acc_steps = 1
     mc_steps = 50
     step_size = 1.0
-    init_width = 3.0
-    mlp_width = 5
+    init_width = 2.0
+    mlp_width = 6
     mlp_depth = 3
     init_learning_rate = 2e-2
-    iterations = 10000
-    inference_batch_size = 5000
+    iterations = 20000
+    inference_batch_size = batch_size * 2
     inference_thermal_step = 50
 
-    # Specific setting
-    if total_num_of_states == 1:
-        figure_save_path = f"./figure/{version}/GS/"
-    else:
-        figure_save_path = f"./figure/{version}/Excit{total_num_of_states}/"
+    figure_save_path = f"./figure/{version}/StateIndices{state_indices}/"
 
     key = jax.random.PRNGKey(42)
 
@@ -83,7 +83,7 @@ def main():
     training_args = {
         "key": key,
         "batch_size": batch_size,
-        "total_num_of_states": total_num_of_states,
+        "state_indices": state_indices,
         "thermal_step": thermal_step,
         "acc_steps": acc_steps,
         "mc_steps": mc_steps,
