@@ -1100,6 +1100,29 @@ class MLPFlow(flax_nn.Module):
     mlp_depth: int
 
     @flax_nn.compact
+    def __call__(self, xs):
+        for i in range(self.mlp_depth):
+            _init_xs = xs
+            xs_new = []
+            for x in xs:
+                x = x.reshape((1,))
+                x = flax_nn.Dense(self.mlp_depth)(x)
+                x = flax_nn.sigmoid(x)
+                x = flax_nn.Dense(1)(x)
+                xs_new.append(x.reshape(-1))
+            xs = jnp.array(xs_new).reshape(_init_xs.shape)
+            xs = _init_xs + xs
+        return xs
+
+
+class MLPFlowPre(flax_nn.Module):
+    """A simple MLP flow"""
+
+    out_dims: int
+    mlp_width: int
+    mlp_depth: int
+
+    @flax_nn.compact
     def __call__(self, x):
         for i in range(self.mlp_depth):
             _init_x = x
@@ -1187,7 +1210,7 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
     key, subkey = jax.random.split(key)
     params = model_flow.init(subkey, x_dummy)
     params = jax.tree.map(
-        lambda leaf: 0.1 * jax.random.truncated_normal(subkey, -2.0, 2.0, leaf.shape),
+        lambda leaf: 0.5 * jax.random.truncated_normal(subkey, -2.0, 2.0, leaf.shape),
         params,
     )
     # Initial Jacobian
@@ -1567,7 +1590,7 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
             f.write("=" * 50)
             f.write("\n")
             f.write(f"Exact Result with {state_indices} states:\n")
-            for energyi in exact_eigenvalues[state_indices]:
+            for i, energyi in zip(state_indices, exact_eigenvalues[state_indices]):
                 f.write(f"n={i}\tenergy={energyi:.5f}\n")
         print(f"Energy levels written to {filepath}")
     else:

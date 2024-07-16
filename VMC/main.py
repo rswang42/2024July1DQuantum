@@ -63,20 +63,20 @@ def main():
 
     version = "sigmoid"
     version = "FixAcceptCount"
-    version = "FockSpaceFlow"
+    version = "FockSpaceFlow-sigmoid"
     # version = "test/testplot"
 
     # Global System settings
     batch_size = 5000
-    thermal_step = 20
+    thermal_step = 50
     acc_steps = 1
-    mc_steps = 50
+    mc_steps = 100
     step_size = 1.0
     init_width = 2.0
     mlp_width = 5
     mlp_depth = 3
-    init_learning_rate = 0.1
-    iterations = 10000
+    init_learning_rate = 1e-2
+    iterations = 30000
     inference_batch_size = batch_size * 2
     inference_thermal_step = 50
 

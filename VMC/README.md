@@ -5,6 +5,11 @@
 
 Implement flow as working in Fock space, that is, to individually transform coordinates of different states with different energy quantum numbers. The jacobians are defined w.r.t within the same quantum number, for example, for state i, the jacobian factor that is multiplied to wave function only takes partial fi/ partial xi where fi is the i-th coordinate that transformed from flow and xi is the original coordinate of i-th state.
 
+Besides, each coordinate should be `seperately` transformed, for example, suppose
+we are transforming [x0,x1,x2] to [z0,z1,z2], then if we arbitrarily change x0,
+leaving the rest x1 and x2 unchanged, then the outputs of the network should
+also only have changes in z1 and z2, but z0 unchanged.
+
 Flow working in Fock Space
 
 ## Important update (2024-07-15)
