@@ -300,12 +300,12 @@ class Metropolis:
         state_indices: np.ndarray,
         probability: jax.Array,
         params: jax.Array | np.ndarray | dict,
-        step_size: float,
+        step_size: jax.Array,
         key: jax.random.PRNGKey,
     ) -> list[
         jax.Array,
         jax.Array,
-        int,
+        jax.Array,
     ]:
         """The one-step Metropolis update
 
@@ -324,14 +324,17 @@ class Metropolis:
                 NOTE: if log_domain == True, then this refers to
                     log probability!
             params: the flow parameter
-            step_size: the step size of each sample step. e.g.
-                xs_new = xs + step_size * jax.random.normal(subkey, shape=pos.shape)
+            step_size: (num_of_orbs,) the step size of each sample step. e.g.
+                xs_new = xs + step_size * jax.random.normal(subkey, shape=xs.shape)
             key: the jax PRNG key.
 
         Returns:
-            xs_new: the updated xs
-            probability_new: the updated probability
-            accetp_count: the number of updates performed per walker.
+            xs_new: (num_of_orbs,)the updated xs
+            probability_new: (num_of_orbs,)the updated probability
+            cond: (num_of_orbs,) the accept condition on each orbital,
+                for example, for state_indices=[0,1,2]
+                after one-shot sample, cond would be
+                like [True, False, True]
         """
         key, subkey = jax.random.split(key)
 
@@ -357,10 +360,7 @@ class Metropolis:
         probability_new = jnp.where(cond, probability_new, probability)
         xs_new = jnp.where(cond, xs_new, xs)
 
-        # Count accepted proposals
-        accept_count = jnp.sum(cond)
-
-        return xs_new, probability_new, accept_count
+        return xs_new, probability_new, cond
 
 
 def mcmc(
@@ -371,10 +371,9 @@ def mcmc(
     state_indices: np.ndarray,
     params: dict,
     probability_batched: jax.Array,
-    mc_step_size: float,
-    pmove: float,
+    mc_step_size: jax.Array,
     log_domain: bool,
-) -> list[jax.random.PRNGKey, jax.Array, jax.Array, float, float]:
+) -> list[jax.random.PRNGKey, jax.Array, jax.Array, jax.Array, jax.Array]:
     """The batched mcmc function for #steps sampling.
     NOTE: this is a jax foriloop implementation
 
@@ -396,8 +395,8 @@ def mcmc(
             the batched probability for each state
                 NOTE: if log_domain == True, then this refers to
                     log probability!
-        mc_step_size: last mcmc moving step size.
-        pmove: the portion of moved particles in last mcmc step.
+        mc_step_size: (num_of_orbs,) last mcmc moving step size.
+            NOTE: this is a per orbital property!
         log_domain: True for work in log domain (wavefunction and
             probability)
 
@@ -410,8 +409,10 @@ def mcmc(
             the batched probability for each state
                 NOTE: if log_domain == True, then this refers to
                     log probability!
-        mc_step_size: updated mcmc moving step size.
-        pmove: the portion of moved particles in current mcmc step.
+        mc_step_size: (num_of_orbs,) updated mcmc moving step size.
+            NOTE: this is a per orbital property!
+        pmove_per_orb: (num_of_orbs,) the portion of moved particles in last mcmc step.
+            NOTE: this is a per orbital property!
     """
 
     if log_domain:
@@ -422,37 +423,45 @@ def mcmc(
     @jax.jit
     def _body_func(i, val):
         """MCMC Body function"""
-        key, xs_batched, probability_batched, mc_step_size, accept_count = val
+        key, xs_batched, probability_batched, mc_step_size, cond = val
         key, batch_keys = key_batch_split(key, batch_size)
-        xs_batched, probability_batched, current_accept_count = (
-            metropolis_sampler_batched(
-                xs_batched,
-                state_indices,
-                probability_batched,
-                params,
-                mc_step_size,
-                batch_keys,
-            )
+        xs_batched, probability_batched, current_cond = metropolis_sampler_batched(
+            xs_batched,
+            state_indices,
+            probability_batched,
+            params,
+            mc_step_size,
+            batch_keys,
         )
-        accept_count += jnp.sum(current_accept_count)
-        return key, xs_batched, probability_batched, mc_step_size, accept_count
+        # cond: (batch,num_of_orbs,)
+        cond += current_cond
+        return key, xs_batched, probability_batched, mc_step_size, cond
 
-    mcmc_init_val = (key, xs_batched, probability_batched, mc_step_size, 0)
-    key, xs_batched, probability_batched, mc_step_size, accept_count = (
-        jax.lax.fori_loop(0, steps, _body_func, mcmc_init_val)
+    mcmc_init_val = (
+        key,
+        xs_batched,
+        probability_batched,
+        mc_step_size,
+        jnp.zeros_like(xs_batched),
     )
-    pmove = accept_count / (batch_size * state_indices.shape[0] * steps)
+    key, xs_batched, probability_batched, mc_step_size, cond = jax.lax.fori_loop(
+        0, steps, _body_func, mcmc_init_val
+    )
+
+    # pmove_per_orb: (num_of_orb,)
+    pmove_per_orb = jnp.mean(cond, axis=0) / steps
+    # mc_step_size: (num_of_orb,)
     mc_step_size = jnp.where(
-        pmove > 0.525,
+        pmove_per_orb > 0.515,
         mc_step_size * 1.1,
         mc_step_size,
     )
     mc_step_size = jnp.where(
-        pmove < 0.475,
+        pmove_per_orb < 0.495,
         mc_step_size * 0.9,
         mc_step_size,
     )
-    return key, xs_batched, probability_batched, mc_step_size, pmove
+    return key, xs_batched, probability_batched, mc_step_size, pmove_per_orb
 
 
 def init_batched_x(
@@ -801,10 +810,12 @@ class Update:
         key: jax.random.PRNGKey,
         xs_batched: jax.Array,
         probability_batched: jax.Array,
-        mc_step_size: float,
+        mc_step_size: jax.Array,
         params: jax.Array | np.ndarray | dict,
         opt_state: optax.OptState,
-    ) -> tuple[float, float, jax.Array, jax.Array, dict, optax.OptState, float, float]:
+    ) -> tuple[
+        float, float, jax.Array, jax.Array, dict, optax.OptState, jax.Array, jax.Array
+    ]:
         """Single update
         NOTE: call WITHOUT vmap!
 
@@ -815,7 +826,8 @@ class Update:
                 The xs are in corresponding order as in state_indices.
             probability_batched: (num_of_batch,num_of_orbs,)
                 the batched probability for each state (wavefunction**2)
-            mc_step_size: the initial mcmc moving step size.
+            mc_step_size: (num_of_orbs,) last mcmc moving step size.
+                NOTE: this is a per orbital property!
             params: the flow parameters
             opt_state: the optimizer state.
 
@@ -826,8 +838,12 @@ class Update:
             probability_batched: the batched probability (wavefunction**2)
             params: the flow parameters
             opt_state: the optimizer state.
-            pmove: the portion of moved coordinates.
-            mc_step_size: the mcmc moving step size.
+            pmove_per_orb: (num_of_orbs,) the portion of moved
+                particles in last mcmc step.
+                NOTE: this is a per orbital property!
+            mc_step_size: (num_of_orbs,) updated mcmc moving step size.
+                NOTE: this is a per orbital property!
+
         """
 
         def _acc_body_func(i, val):
@@ -840,7 +856,7 @@ class Update:
                 xs_batched,
                 probability_batched,
                 mc_step_size,
-                pmove,
+                pmove_in,
                 params,
             ) = val
             (
@@ -848,7 +864,7 @@ class Update:
                 xs_batched,
                 probability_batched,
                 mc_step_size,
-                pmove,
+                pmove_per_orb,
             ) = mcmc(
                 steps=self.mcmc_steps,
                 metropolis_sampler_batched=self.metropolis_sampler_batched,
@@ -858,7 +874,6 @@ class Update:
                 params=params,
                 probability_batched=probability_batched,
                 mc_step_size=mc_step_size,
-                pmove=pmove,
                 log_domain=self.log_domain,
             )
             (loss_i, energies_i), gradients_i = self.loss_and_grad(params, xs_batched)
@@ -877,11 +892,12 @@ class Update:
                 xs_batched,
                 probability_batched,
                 mc_step_size,
-                pmove,
+                pmove_per_orb,
                 params,
             )
 
         # Only for initialization of val in jax.lax.foriloop!
+        pmove_dummy = jnp.zeros_like(self.state_indices, dtype=jnp.float64)
         (loss, energies), gradients = self.loss_and_grad(params, xs_batched)
         loss = jnp.float64(0.0)
         energies = jnp.zeros_like(energies)
@@ -896,7 +912,7 @@ class Update:
             xs_batched,
             probability_batched,
             mc_step_size,
-            0,
+            pmove_dummy,
             params,
         )
 
@@ -908,7 +924,7 @@ class Update:
             xs_batched,
             probability_batched,
             mc_step_size,
-            pmove,
+            pmove_per_orb,
             params,
         ) = jax.lax.fori_loop(0, self.acc_steps, _acc_body_func, acc_init_val)
 
@@ -929,7 +945,7 @@ class Update:
             probability_batched,
             params,
             opt_state,
-            pmove,
+            pmove_per_orb,
             mc_step_size,
         )
 
@@ -984,6 +1000,9 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
     print(f"Computed States Indices: {state_indices}")
     print("======================================")
 
+    state_indices = np.array(state_indices)
+    step_size = step_size * jnp.ones_like(state_indices, dtype=jnp.float64)
+
     if savefig:
         figure_save_path = os.path.join(
             figure_save_path,
@@ -1027,7 +1046,7 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
     key, subkey = jax.random.split(key)
     params = model_flow.init(subkey, x_dummy)
     params = jax.tree.map(
-        lambda leaf: 0.01 * jax.random.truncated_normal(subkey, -2.0, 2.0, leaf.shape),
+        lambda leaf: 0.1 * jax.random.truncated_normal(subkey, -2.0, 2.0, leaf.shape),
         params,
     )
     # Initial Jacobian
@@ -1106,9 +1125,8 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
     xs = init_x_batched
 
     print("Thermalization...")
-    pmove = 0
     t0 = time.time()
-    key, xs, probability_batched, step_size, pmove = mcmc(
+    key, xs, probability_batched, step_size, pmove_per_orb = mcmc(
         steps=thermal_step,
         metropolis_sampler_batched=metropolis_sample_batched,
         key=key,
@@ -1117,14 +1135,13 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
         params=params,
         probability_batched=probability_batched,
         mc_step_size=step_size,
-        pmove=pmove,
         log_domain=log_domain,
     )
     t1 = time.time()
     time_cost = t1 - t0
     print(
-        f"After Thermalization:\tpmove {pmove:.2f}\t"
-        f"step_size={step_size:.4f}\ttime={time_cost:.2f}s",
+        f"After Thermalization:\tpmove {pmove_per_orb}\t"
+        f"step_size={step_size}\ttime={time_cost:.2f}s",
         flush=True,
     )
 
@@ -1186,7 +1203,7 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
                 probability_batched,
                 params,
                 opt_state,
-                pmove,
+                pmove_per_orb,
                 step_size,
             ) = update(
                 subkey,
@@ -1199,8 +1216,8 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
             t1 = time.time()
             print(
                 f"Iter:{i}, LossE={loss_energy:.5f}({energy_std:.5f})"
-                f"\t pmove={pmove:.2f}\tstepsize={step_size:.4f}"
-                f"\t time={(t1-t0):.2f}s"
+                f"\t pmove={pmove_per_orb}\tstepsize={step_size}"
+                f"\t time={(t1-t0):.3f}s"
             )
             loss_energy_list.append(loss_energy)
             energy_std_list.append(energy_std)
@@ -1214,7 +1231,7 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
                 probability_batched,
                 params,
                 opt_state,
-                pmove,
+                pmove_per_orb,
                 step_size,
             ) = update(
                 subkey,
@@ -1349,7 +1366,7 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
         )
     print("Thermalization...")
     t0 = time.time()
-    key, xs_inference, probability_batched, step_size, pmove = mcmc(
+    key, xs_inference, probability_batched, step_size, pmove_per_orb = mcmc(
         steps=inference_thermal_step,
         metropolis_sampler_batched=metropolis_sample_batched,
         key=key,
@@ -1358,14 +1375,13 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
         params=params,
         probability_batched=probability_batched,
         mc_step_size=step_size,
-        pmove=pmove,
         log_domain=log_domain,
     )
     t1 = time.time()
     time_cost = t1 - t0
     print(
-        f"After Thermalization:\tpmove {pmove:.2f}\t"
-        f"step_size={step_size:.4f}\ttime={time_cost:.2f}s",
+        f"After Thermalization:\tpmove {pmove_per_orb}\t"
+        f"step_size={step_size}\ttime={time_cost:.2f}s",
         flush=True,
     )
 
@@ -1383,22 +1399,24 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
             f.write("=" * 50)
             f.write("\n")
             f.write(f"VMC Result with {state_indices} states:\n")
-            for i, energyi in enumerate(energy_levels):
-                f.write(f"n={i}\tenergy={energyi:.5f}({energy_levels_std[i]:.5f})\n")
+            for i, energyi, stdi in zip(
+                state_indices, energy_levels, energy_levels_std
+            ):
+                f.write(f"n={i}\tenergy={energyi:.5f}({stdi:.5f})\n")
             f.write("=" * 50)
             f.write("\n")
             f.write(f"Exact Result with {state_indices} states:\n")
-            for i, energyi in enumerate(exact_eigenvalues[:state_indices:]):
+            for energyi in exact_eigenvalues[state_indices]:
                 f.write(f"n={i}\tenergy={energyi:.5f}\n")
         print(f"Energy levels written to {filepath}")
     else:
         print("=" * 50, "\n")
         print(f"VMC Result with {state_indices} states:\n")
-        for i, energyi in enumerate(energy_levels):
-            print(f"n={i}\tenergy={energyi:.5f}({energy_levels_std[i]:.5f})\n")
+        for i, energyi, stdi in zip(state_indices, energy_levels, energy_levels_std):
+            print(f"n={i}\tenergy={energyi:.5f}({stdi[i]:.5f})\n")
         print("=" * 50, "\n")
         print(f"Exact Result with {state_indices} states:\n")
-        for i, energyi in enumerate(exact_eigenvalues[:state_indices:]):
+        for energyi in exact_eigenvalues[state_indices]:
             print(f"n={i}\tenergy={energyi:.5f}\n")
 
     print("======================================")

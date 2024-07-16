@@ -19,7 +19,7 @@ def main():
     parser = argparse.ArgumentParser(description="1D VMC")
 
     parser.add_argument(
-        "--log_domain", type=bool, default=True, help="True for working in log domain"
+        "--log_domain", action="store_true", help="True for working in log domain"
     )
     parser.add_argument(
         "--ferminet_loss",
@@ -27,7 +27,10 @@ def main():
         help="Set this to use FermiNet style loss.",
     )
     parser.add_argument(
-        "--clip", type=float, default=None, help="Energy Gradient Clipping Factor"
+        "--clip",
+        type=float,
+        default=None,
+        help="Energy Gradient Clipping Factor, None for not clipping",
     )
     parser.add_argument(
         "--wfclip",
@@ -58,20 +61,21 @@ def main():
     if not isinstance(total_num_of_states, int):
         raise TypeError("total number of states must be integer!")
 
-    version = "test/sigmoid"
+    version = "sigmoid"
+    version = "FixAcceptCount"
     # version = "test/testplot"
 
     # Global System settings
-    batch_size = 4000
+    batch_size = 5000
     thermal_step = 20
     acc_steps = 1
     mc_steps = 50
     step_size = 1.0
     init_width = 2.0
-    mlp_width = 6
+    mlp_width = 5
     mlp_depth = 3
-    init_learning_rate = 2e-2
-    iterations = 20000
+    init_learning_rate = 0.1
+    iterations = 10000
     inference_batch_size = batch_size * 2
     inference_thermal_step = 50
 
