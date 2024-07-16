@@ -2,3 +2,4 @@
 - [x] Correct loss gradient in FermiNet style formula and implementation
 - [x] Implement loss as in m*, in which the gradient is only calculated with Eloc but not Eloc - expectation_of_Eloc.
 - [ ] Try to desing network with nodal features.
+- [ ] Change wave function ansatze into Fock Space.

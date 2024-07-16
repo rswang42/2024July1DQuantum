@@ -174,22 +174,123 @@ class WFAnsatz:
         amplitude = phi * jacdet
         return amplitude
 
+    def log_wf_ansatz_fock(
+        self,
+        params: jax.Array | np.ndarray,
+        xs: jax.Array,
+        state_indices: jax.Array,
+    ) -> jax.Array:
+        """The flow transformed log wavefunction
+        NOTE: in fock space! Namely that gives
+        the wavefunction of different orbitals
+        as concatenated array!
+
+        Args:
+            params: the flow parameter
+            xs: (num_of_orbs,) the 1D coordinate of the particle(s).
+                The xs are in corresponding order as in state_indices.
+            state_indices: (num_of_orbs,) the array containing
+                the excitations in each bath, for example,
+                [0,1,2] represents there are totally 3 number
+                of orbitals: ground state: 0
+                            first excitation state: 1
+                            second excitation state: 2
+
+        Returns:
+            log_amplitudes: (num_of_orbs,) the log wavefunction
+                log|psi| corresponding to each orbitals
+                in state_indices.
+        """
+        # zs: (num_of_orbs,)
+        zs = self.flow.apply(params, xs)
+
+        vmapped_log_wf_base = jax.vmap(
+            log_wf_base,
+            in_axes=(0, 0),
+            out_axes=0,
+        )
+        # logphis: (num_of_orbs,)
+        log_phis = vmapped_log_wf_base(zs, state_indices)
+
+        def _flow_func(xs):
+            return self.flow.apply(params, xs).reshape(-1)
+
+        # jac: (num_of_orbs,num_of_orbs)
+        jac = jax.jacfwd(_flow_func)(xs)
+
+        # jac_fock: (num_of_orbs,)
+        jac_fock = jnp.diagonal(jac)
+        logjacdet_fock = jnp.log(jnp.abs(jac_fock))
+
+        log_amplitudes = log_phis + 0.5 * logjacdet_fock
+        return log_amplitudes
+
+    def wf_ansatz_fock(
+        self,
+        params: jax.Array | np.ndarray | dict,
+        xs: jax.Array,
+        state_indices: jax.Array,
+    ) -> jax.Array:
+        """The flow transformed log wavefunction
+        NOTE: in fock space! Namely that gives
+        the wavefunction of different orbitals
+        as concatenated array!
+
+        Args:
+            params: the flow parameter
+            xs: (num_of_orbs,) the 1D coordinate of the particle(s).
+                The xs are in corresponding order as in state_indices.
+            state_indices: (num_of_orbs,) the array containing
+                the excitations in each bath, for example,
+                [0,1,2] represents there are totally 3 number
+                of orbitals: ground state: 0
+                            first excitation state: 1
+                            second excitation state: 2
+
+            NOTE: n=0 for GS!
+
+        Returns:
+            amplitudes: (num_of_orbs,) the wavefunction
+                log|psi| corresponding to each orbitals
+                in state_indices.
+        """
+        zs = self.flow.apply(params, xs)
+
+        vmapped_wf_base = jax.vmap(
+            wf_base,
+            in_axes=(0, 0),
+            out_axes=0,
+        )
+        phis = vmapped_wf_base(zs, state_indices)
+
+        def _flow_func(xs):
+            return self.flow.apply(params, xs).reshape(-1)
+
+        jac = jax.jacfwd(_flow_func)(xs)
+
+        jac_fock = jnp.diagonal(jac)
+        jacdet_fock = jnp.sqrt(jnp.abs(jac_fock))
+
+        amplitudes = phis * jacdet_fock
+        return amplitudes
+
 
 class EnergyEstimator:
     """Energy Estimator
 
     Attributes:
-        self.wf_ansatz: the callable wave function ansatz
-            signature: (params, x, n)
+        self.wf_ansatz_fock: the callable wave function ansatz
+            in fock space
+            signature: (params, xs, state_indices)
         self.log_gomain: True for working in log domain.
     """
 
     def __init__(
         self,
-        wf_ansatz: callable,
+        wf_ansatz_fock: callable,
         log_domain: bool = True,
     ) -> None:
-        self.wf_ansatz = wf_ansatz
+        self.wf_ansatz_fock = wf_ansatz_fock
         self.log_domain = log_domain
 
     def local_kinetic_energy(
@@ -213,23 +314,42 @@ class EnergyEstimator:
                             second excitation state: 2
 
         Returns:
-            local_kinetic: the local kinetic energy.
+            local_kinetic: (num_of_orbs,) the local kinetic energy.
         """
+
+        # NOTE: Previously single state wf ansatze.
+        # =====================================================
         # NOTE: only work for one-dimensional system!
         # For higher dimension, use jax.jacrev and jax.jvp
-        single_grad_func = jax.grad(self.wf_ansatz, argnums=1)
-        single_laplacian_func = jax.grad(single_grad_func, argnums=1)
-        wf_vmapped = jax.vmap(self.wf_ansatz, in_axes=(None, 0, 0))
-        grads = jax.vmap(single_grad_func, in_axes=(None, 0, 0))(
-            params, xs, state_indices
-        )
-        laplacians = jax.vmap(single_laplacian_func, in_axes=(None, 0, 0))(
-            params, xs, state_indices
-        )
+
+        # single_grad_func = jax.grad(self.wf_ansatz, argnums=1)
+        # single_laplacian_func = jax.grad(single_grad_func, argnums=1)
+        # wf_vmapped = jax.vmap(self.wf_ansatz, in_axes=(None, 0, 0))
+        # grads = jax.vmap(single_grad_func, in_axes=(None, 0, 0))(
+        #     params, xs, state_indices
+        # )
+        # laplacians = jax.vmap(single_laplacian_func, in_axes=(None, 0, 0))(
+        #     params, xs, state_indices
+        # )
+        # =====================================================
+
+        # NOTE: currently only working on one-dimensional x!
+        def _wf_fock(xs):
+            return self.wf_ansatz_fock(params, xs, state_indices)
+
+        first_order_derivative = jax.jacfwd(_wf_fock)(xs)
+        grads = jnp.diagonal(first_order_derivative)
+
+        second_order_derivative = jax.hessian(_wf_fock)(xs)
+        main_diagonals = jnp.diagonal(second_order_derivative)
+        laplacians = jnp.diagonal(main_diagonals)
+
         if self.log_domain:
             local_kinetics = -0.5 * (laplacians + (grads**2))
         else:
-            local_kinetics = -0.5 * laplacians / wf_vmapped(params, xs, state_indices)
+            local_kinetics = (
+                -0.5 * laplacians / self.wf_ansatz_fock(params, xs, state_indices)
+            )
         return local_kinetics
 
     @staticmethod
@@ -242,7 +362,7 @@ class EnergyEstimator:
             xs: (num_of_orbs,) the 1D coordinate of the particle(s).
                 The xs are in corresponding order as in state_indices.
         Returns:
-            local_potential: the local potential energy.
+            local_potential: (num_of_orbs,) the local potential energy.
         """
         local_potentials = 3 * xs**4 + xs**3 / 2 - 3 * xs**2
         return local_potentials
@@ -267,7 +387,7 @@ class EnergyEstimator:
                             second excitation state: 2
 
         Returns:
-            local_energy: the local energy.
+            local_energy: (num_of_orbs,) the local energy.
         """
         kin_energy = self.local_kinetic_energy(params, xs, state_indices)
         pot_energy = self.local_potential_energy(xs)
@@ -281,17 +401,18 @@ class Metropolis:
     to the Metropolis algorithm.
 
     Attributes:
-        self.wf_ansatz: the callable wave function ansatz
-            signature: (params, x, n)
+        self.wf_ansatz_fock: the callable wave function ansatz
+            in fock space
+            signature: (params, xs, state_indices)
         self.log_gomain: True for working in log domain.
     """
 
     def __init__(
         self,
-        wf_ansatz: callable,
+        wf_ansatz_fock: callable,
         log_domain: bool = True,
     ) -> None:
-        self.wf_ansatz = wf_ansatz
+        self.wf_ansatz_fock = wf_ansatz_fock
         self.log_domain = log_domain
 
     def oneshot_sample(
@@ -339,7 +460,8 @@ class Metropolis:
         key, subkey = jax.random.split(key)
 
         # vmap wavefunction on different orbitals(states)
-        wf_vmapped = jax.vmap(self.wf_ansatz, in_axes=(None, 0, 0))
+        # wf_vmapped = jax.vmap(self.wf_ansatz, in_axes=(None, 0, 0))
+        wf_vmapped = self.wf_ansatz_fock
         xs_new = xs + step_size * jax.random.normal(subkey, shape=xs.shape)
 
         if self.log_domain:
@@ -503,7 +625,7 @@ def key_batch_split(key: jax.random.PRNGKey, batch_size: int):
 
 
 def make_loss(
-    wf_ansatz: callable,
+    wf_ansatz_fock: callable,
     local_energy_estimator: callable,
     state_indices: np.ndarray,
     clip_factor: float | None,
@@ -516,7 +638,8 @@ def make_loss(
     NOTE: batched implementation!
 
     Args:
-    wf_ansatz: function, signature (params, x, n), which evaluates wavefunction
+    wf_ansatz_fock: function, signature (params, xs, state_indices),
+        which evaluates wavefunction in fock space
         at a single MCMC configuration given the network parameters.
     local_energy_estimator: signature (params, xs, state_indices), here
         xs refers to the x coordinates in one single batch, xs has shape (num_of_orb,)
@@ -544,16 +667,23 @@ def make_loss(
     batch_local_energy = jax.vmap(
         local_energy_estimator, in_axes=(None, 0, None), out_axes=0
     )
+
+    # if log_domain:
+    #     log_wf = wf_ansatz
+    # else:
+    #     log_wf = lambda params, x, n: jnp.log(jnp.abs(wf_ansatz(params, x, n)))
+    # # vmapped wavefunction: signature (params, xs, state_indices)
+    # log_wf_vmapped = jax.vmap(log_wf, in_axes=(None, 0, 0))
+    # # batch_wf: signature (params, batched_xs, state_indices)
+    # batch_wf = jax.vmap(log_wf_vmapped, in_axes=(None, 0, None), out_axes=0)
+
     if log_domain:
-        log_wf = wf_ansatz
+        log_wf_fock = wf_ansatz_fock
     else:
-        # FermiNet is defined in terms of the logarithm of the network, which is
-        # better for numerical stability and also makes some expressions neater.
-        log_wf = lambda params, x, n: jnp.log(jnp.abs(wf_ansatz(params, x, n)))
-    # vmapped wavefunction: signature (params, xs, state_indices)
-    log_wf_vmapped = jax.vmap(log_wf, in_axes=(None, 0, 0))
-    # batch_wf: signature (params, batched_xs, state_indices)
-    batch_wf = jax.vmap(log_wf_vmapped, in_axes=(None, 0, None), out_axes=0)
+        log_wf_fock = lambda params, xs, state_indices: jnp.log(
+            jnp.abs(wf_ansatz_fock(params, xs, state_indices))
+        )
+    batch_wf = jax.vmap(log_wf_fock, in_axes=(None, 0, None), out_axes=0)
 
     @jax.custom_jvp
     def total_energy(params, batched_xs) -> tuple[float, np.ndarray]:
@@ -626,8 +756,8 @@ class Loss:
                             first excitation state: 1
                             second excitation state: 2
         self.batch_local_energy: the batched local energy estimator.
-        self.log_wf_vmapped: the log domain wavefunction callable
-            vmapped on ORBITALS!
+        self.log_wf_fock: the log domain wavefunction callable
+            in fock space, aka, concatenated on ORBITALS!
         self.batch_wf: the logg domain wavefunction callable
             vmapped one BATCH!
         self.clip_factor: the gradient clipping factor for energy part. None for
@@ -638,7 +768,7 @@ class Loss:
 
     def __init__(
         self,
-        wf_ansatz: callable,
+        wf_ansatz_fock: callable,
         local_energy_estimator: callable,
         state_indices: np.ndarray,
         clip_factor: float | None,
@@ -648,7 +778,8 @@ class Loss:
         """Init
 
         Args:
-            wf_ansatz: function, signature (params, x, n), which evaluates wavefunction
+            wf_ansatz_fock: function, signature (params, xs, state_indices),
+                which evaluates wavefunction in fock space
                 at a single MCMC configuration given the network parameters.
             local_energy_estimator: signature (params, xs, state_indices), here
                 xs refers to the x coordinates in one single batch, xs has shape
@@ -670,16 +801,27 @@ class Loss:
         self.batch_local_energy = jax.vmap(
             local_energy_estimator, in_axes=(None, 0, None), out_axes=0
         )
+
+        # if log_domain:
+        #     log_wf = wf_ansatz
+        # else:
+        #     log_wf = lambda params, x, n: jnp.log(jnp.abs(wf_ansatz(params, x, n)))
+        # # vmapped wavefunction: signature (params, xs, state_indices)
+        # self.log_wf_vmapped = jax.vmap(log_wf, in_axes=(None, 0, 0))
+        # # batch_wf: signature (params, batched_xs, state_indices)
+        # self.batch_wf = jax.vmap(
+        #     self.log_wf_vmapped, in_axes=(None, 0, None), out_axes=0
+        # )
+
         if log_domain:
-            log_wf = wf_ansatz
+            self.log_wf_fock = wf_ansatz_fock
         else:
-            log_wf = lambda params, x, n: jnp.log(jnp.abs(wf_ansatz(params, x, n)))
-        # vmapped wavefunction: signature (params, xs, state_indices)
-        self.log_wf_vmapped = jax.vmap(log_wf, in_axes=(None, 0, 0))
+            self.log_wf_fock = lambda params, xs, state_indices: jnp.log(
+                jnp.abs(wf_ansatz_fock(params, xs, state_indices))
+            )
         # batch_wf: signature (params, batched_xs, state_indices)
-        self.batch_wf = jax.vmap(
-            self.log_wf_vmapped, in_axes=(None, 0, None), out_axes=0
-        )
+        self.batch_wf = jax.vmap(self.log_wf_fock, in_axes=(None, 0, None), out_axes=0)
+
         self.clip_factor = clip_factor
         self.wf_clip_factpr = wf_clip_factor
         if wf_clip_factor:
@@ -961,9 +1103,6 @@ class MLPFlow(flax_nn.Module):
     def __call__(self, x):
         for i in range(self.mlp_depth):
             _init_x = x
-            x = x.reshape(
-                1,
-            )
             x = flax_nn.Dense(self.mlp_width)(x)
             x = flax_nn.sigmoid(x)
             x = flax_nn.Dense(self.out_dims)(x)
@@ -1040,9 +1179,11 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
             # raise FileExistsError("Desitination already exists! Please check!")
             pass
 
-    model_flow = MLPFlow(out_dims=1, mlp_width=mlp_width, mlp_depth=mlp_depth)
+    model_flow = MLPFlow(
+        out_dims=state_indices.shape[0], mlp_width=mlp_width, mlp_depth=mlp_depth
+    )
     key, subkey = jax.random.split(key)
-    x_dummy = jnp.array(0.0, dtype=jnp.float64)
+    x_dummy = jnp.zeros(state_indices.shape[0], dtype=jnp.float64)
     key, subkey = jax.random.split(key)
     params = model_flow.init(subkey, x_dummy)
     params = jax.tree.map(
@@ -1051,19 +1192,23 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
     )
     # Initial Jacobian
     init_jacobian = jax.jacfwd(lambda x: model_flow.apply(params, x))(x_dummy)
-    if jnp.abs(init_jacobian - 1.0) > 0.2:
+    if (jnp.diagonal(jnp.abs(init_jacobian - 1.0)) > 0.2).any():
         raise ValueError(
-            f"Init Jacobian too far from identity!\nGet init Jacobian={init_jacobian}\n"
+            "Init Jacobian too far from identity!\n"
+            "Get init Jacobian for each state in fock"
+            f"space {state_indices}={jnp.diagonal(init_jacobian)}\n"
         )
-    print(f"Init Jacobian = \n{init_jacobian}")
+    print(
+        "Init Jacobian for each state in fock space"
+        f" {state_indices}= \n{jnp.diagonal(init_jacobian)}"
+    )
 
     # Initialize Wavefunction
     wf_ansatz_obj = WFAnsatz(flow=model_flow)
     if log_domain:
-        wf_ansatz = wf_ansatz_obj.log_wf_ansatz
+        wf_ansatz_fock = wf_ansatz_obj.log_wf_ansatz_fock
     else:
-        wf_ansatz = wf_ansatz_obj.wf_ansatz
-    wf_vmapped = jax.vmap(wf_ansatz, in_axes=(None, 0, 0))
+        wf_ansatz_fock = wf_ansatz_obj.wf_ansatz_fock
 
     # Plotting wavefunction
     print("Wavefunction (Initialization)")
@@ -1073,8 +1218,17 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
     xmesh = np.linspace(xmin, xmax, Nmesh, dtype=np.float64)
     mesh_interval = xmesh[1] - xmesh[0]
     plt.figure()
+
+    xmesh_fock = np.tile(xmesh, state_indices.shape[0]).reshape(
+        state_indices.shape[0], Nmesh
+    )
+    wfs_on_mesh = jax.vmap(
+        wf_ansatz_fock,
+        in_axes=(None, 1, None),
+        out_axes=0,
+    )(params, xmesh_fock, state_indices)
     for i in state_indices:
-        wf_on_mesh = jax.vmap(wf_ansatz, in_axes=(None, 0, None))(params, xmesh, i)
+        wf_on_mesh = wfs_on_mesh[:, i]
         plt.plot(xmesh, wf_on_mesh, label=f"n={i}")
     plt.xlim([-10, 10])
     if log_domain:
@@ -1093,7 +1247,9 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
     plt.close()
 
     # Local Energy Estimator
-    energy_estimator = EnergyEstimator(wf_ansatz=wf_ansatz, log_domain=log_domain)
+    energy_estimator = EnergyEstimator(
+        wf_ansatz_fock=wf_ansatz_fock, log_domain=log_domain
+    )
 
     # Metropolis, thermalization
     key, subkey = jax.random.split(key)
@@ -1103,21 +1259,21 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
         num_of_orbs=state_indices.shape[0],
         init_width=init_width,
     )
-    metropolis = Metropolis(wf_ansatz=wf_ansatz, log_domain=log_domain)
+    metropolis = Metropolis(wf_ansatz_fock=wf_ansatz_fock, log_domain=log_domain)
     metropolis_sample = metropolis.oneshot_sample
     metropolis_sample_batched = jax.jit(
         jax.vmap(metropolis_sample, in_axes=(0, None, 0, None, None, 0))
     )
     if log_domain:  # log probabilities
         probability_batched = (
-            jax.vmap(wf_vmapped, in_axes=(None, 0, None))(
+            jax.vmap(wf_ansatz_fock, in_axes=(None, 0, None))(
                 params, init_x_batched, state_indices
             )
             * 2
         )
     else:
         probability_batched = (
-            jax.vmap(wf_vmapped, in_axes=(None, 0, None))(
+            jax.vmap(wf_ansatz_fock, in_axes=(None, 0, None))(
                 params, init_x_batched, state_indices
             )
             ** 2
@@ -1148,7 +1304,7 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
     if ferminet_loss:
         # Loss function, FermiNet Style
         loss_energy = make_loss(
-            wf_ansatz=wf_ansatz,
+            wf_ansatz_fock=wf_ansatz_fock,
             local_energy_estimator=energy_estimator.local_energy,
             state_indices=state_indices,
             clip_factor=clip_factor,
@@ -1161,7 +1317,7 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
     else:
         # Loss function, as in Hydrogen
         loss_obj = Loss(
-            wf_ansatz=wf_ansatz,
+            wf_ansatz_fock=wf_ansatz_fock,
             local_energy_estimator=energy_estimator.local_energy,
             state_indices=state_indices,
             clip_factor=clip_factor,
@@ -1314,8 +1470,13 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
     # Finally Plotting Probability Density
     print("Probability Density (Trained)")
     plt.figure()
+    wfs_on_mesh = jax.vmap(
+        wf_ansatz_fock,
+        in_axes=(None, 1, None),
+        out_axes=0,
+    )(params, xmesh_fock, state_indices)
     for i in state_indices:
-        wf_on_mesh = jax.vmap(wf_ansatz, in_axes=(None, 0, None))(params, xmesh, i)
+        wf_on_mesh = wfs_on_mesh[:, i]
         if log_domain:
             normalize_factor = (jnp.exp(wf_on_mesh * 2)).sum() * mesh_interval
             prob_density = jnp.exp(wf_on_mesh * 2) / normalize_factor
@@ -1352,14 +1513,14 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
     )
     if log_domain:
         probability_batched = (
-            jax.vmap(wf_vmapped, in_axes=(None, 0, None))(
+            jax.vmap(wf_ansatz_fock, in_axes=(None, 0, None))(
                 params, xs_inference, state_indices
             )
             * 2
         )
     else:
         probability_batched = (
-            jax.vmap(wf_vmapped, in_axes=(None, 0, None))(
+            jax.vmap(wf_ansatz_fock, in_axes=(None, 0, None))(
                 params, xs_inference, state_indices
             )
             ** 2

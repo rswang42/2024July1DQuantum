@@ -1,5 +1,12 @@
 # IMPORTANT
 
+
+## Important update (2024-07-16)
+
+Implement flow as working in Fock space, that is, to individually transform coordinates of different states with different energy quantum numbers. The jacobians are defined w.r.t within the same quantum number, for example, for state i, the jacobian factor that is multiplied to wave function only takes partial fi/ partial xi where fi is the i-th coordinate that transformed from flow and xi is the original coordinate of i-th state.
+
+Flow working in Fock Space
+
 ## Important update (2024-07-15)
 
 
@@ -34,3 +41,4 @@ wavefunctions in training**:
 may perform a **single** calculation for ground state only to achieve the
 best ground state estimation, then perform a **excited states calculation without
 ground state**, for example, `--state_indices 1 2 3 4 5 6 7 8` for these nodal states.
+

@@ -63,6 +63,7 @@ def main():
 
     version = "sigmoid"
     version = "FixAcceptCount"
+    version = "FockSpaceFlow"
     # version = "test/testplot"
 
     # Global System settings
