@@ -24,15 +24,14 @@ def buildH(
     h: float | int,
 ):
     """Build Hamiltonian on a discrete mesh"""
-    Vx = np.array([Vpot(x) for x in xmesh])
-    H = np.diag(Vx)
-
-    for i in range(Nmesh):
-        H[i, i] += 1.0 / (h * h)
-
-    for i in range(Nmesh - 1):
-        H[i, i + 1] += -0.5 / (h * h)
-        H[i + 1, i] += -0.5 / (h * h)
+    Vx = Vpot(xmesh)
+    Vx = np.diag(Vx, 0)
+    H_kinetic = (
+        -2 * np.diag(np.ones(Nmesh, dtype=np.float64), 0)
+        + np.diag(np.ones(Nmesh - 1, dtype=np.float64), 1)
+        + np.diag(np.ones(Nmesh - 1, dtype=np.float64), -1)
+    ) / (2 * h**2)
+    H = Vx - H_kinetic
 
     return H
 
@@ -956,7 +955,14 @@ class Update:
         params: jax.Array | np.ndarray | dict,
         opt_state: optax.OptState,
     ) -> tuple[
-        float, float, jax.Array, jax.Array, dict, optax.OptState, jax.Array, jax.Array
+        float | jax.Array,
+        float | jax.Array,
+        jax.Array,
+        jax.Array,
+        jax.Array | dict,
+        optax.OptState,
+        jax.Array,
+        jax.Array,
     ]:
         """Single update
         NOTE: call WITHOUT vmap!
@@ -1099,39 +1105,22 @@ class MLPFlow(flax_nn.Module):
     mlp_width: int
     mlp_depth: int
 
+    def single_state(self, x):
+        """Single state flow"""
+        x = x.reshape((1,))
+        x = flax_nn.Dense(self.mlp_depth)(x)
+        x = flax_nn.sigmoid(x)
+        x = flax_nn.Dense(1)(x)
+        return x.reshape(-1)
+
     @flax_nn.compact
     def __call__(self, xs):
         for i in range(self.mlp_depth):
             _init_xs = xs
-            xs_new = []
-            for x in xs:
-                x = x.reshape((1,))
-                x = flax_nn.Dense(self.mlp_depth)(x)
-                x = flax_nn.sigmoid(x)
-                x = flax_nn.Dense(1)(x)
-                xs_new.append(x.reshape(-1))
-            xs = jnp.array(xs_new).reshape(_init_xs.shape)
+            xs_new = jax.vmap(self.single_state)(xs)
+            xs = xs_new.reshape(_init_xs.shape)
             xs = _init_xs + xs
         return xs
-
-
-class MLPFlowPre(flax_nn.Module):
-    """A simple MLP flow"""
-
-    out_dims: int
-    mlp_width: int
-    mlp_depth: int
-
-    @flax_nn.compact
-    def __call__(self, x):
-        for i in range(self.mlp_depth):
-            _init_x = x
-            x = flax_nn.Dense(self.mlp_width)(x)
-            x = flax_nn.sigmoid(x)
-            x = flax_nn.Dense(self.out_dims)(x)
-            x = _init_x + x
-
-        return x
 
 
 def training_kernel(args: dict, savefig: bool = True) -> None:
@@ -1235,9 +1224,9 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
 
     # Plotting wavefunction
     print("Wavefunction (Initialization)")
-    xmin = -10
-    xmax = 10
-    Nmesh = 2000
+    xmin = -15
+    xmax = 15
+    Nmesh = 5000
     xmesh = np.linspace(xmin, xmax, Nmesh, dtype=np.float64)
     mesh_interval = xmesh[1] - xmesh[0]
     plt.figure()
@@ -1478,7 +1467,7 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
     # Plotting Potential
     print("Plotting Potential")
     plt.figure()
-    plt.plot(xmesh, [potential_func(x) for x in xmesh], "k-", lw=2, label="Potential")
+    plt.plot(xmesh, potential_func(xmesh), "k-", lw=2, label="Potential")
     plt.xlim([-2, 2])
     plt.ylim([-2, 10])
     plt.legend()
