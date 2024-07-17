@@ -1105,20 +1105,18 @@ class MLPFlow(flax_nn.Module):
     mlp_width: int
     mlp_depth: int
 
-    def single_state(self, x):
-        """Single state flow"""
-        x = x.reshape((1,))
-        x = flax_nn.Dense(self.mlp_depth)(x)
-        x = flax_nn.sigmoid(x)
-        x = flax_nn.Dense(1)(x)
-        return x.reshape(-1)
-
     @flax_nn.compact
     def __call__(self, xs):
         for i in range(self.mlp_depth):
             _init_xs = xs
-            xs_new = jax.vmap(self.single_state)(xs)
-            xs = xs_new.reshape(_init_xs.shape)
+            xs_new = []
+            for x in xs:
+                x = x.reshape((1,))
+                x = flax_nn.Dense(self.mlp_depth)(x)
+                x = flax_nn.sigmoid(x)
+                x = flax_nn.Dense(1)(x)
+                xs_new.append(x.reshape(-1))
+            xs = jnp.array(xs_new).reshape(_init_xs.shape)
             xs = _init_xs + xs
         return xs
 

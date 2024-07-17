@@ -73,7 +73,7 @@ def main():
     mlp_width = 5
     mlp_depth = 3
     init_learning_rate = 1e-2
-    iterations = 10000
+    iterations = 20000
     inference_batch_size = batch_size * 2
     inference_thermal_step = 50
 

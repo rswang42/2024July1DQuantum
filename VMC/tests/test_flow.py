@@ -33,7 +33,7 @@ class TestFlow(unittest.TestCase):
         init_z = self.model_flow.apply(self.params, init_x)
 
         # change x[0]
-        x_changed = init_x.at[0].set(init_x[0] + 0.5)
+        x_changed = init_x.at[0].set(init_x[0] + np.random.normal())
         z_after_x_changed = self.model_flow.apply(self.params, x_changed)
 
         expect_unchange_indices = np.array([1, 2])
