@@ -55,11 +55,15 @@ $$
     \langle \Psi_i | \Psi_j \rangle &= \int dx_i dx_j \langle
             \Psi_i| x_i \rangle \langle x_i | x_j \rangle
             \langle x_j | \Psi_j \rangle \\
-            &= \int dx_i dx_j \delta_{ij} \Psi_i^*(x_i)\Psi_j(x_j)\\
-            &= \int dx_i dx_j \delta_{ij} 
+            &= \int dx_i dx_j \delta(x_i-x_j) \Psi_i^*(x_i)\Psi_j(x_j)\\
+            &= \int dx_i dx_j \delta(x_i-x_j) 
                 \Phi_i(f_i(x_i,\theta_i)) \Phi_j(f_j(x_j,\theta_j))
                 \sqrt{\text{det}\left(\frac{\partial f_i(x_i,\theta_i)}{\partial x_i}\right)}
-                \sqrt{\text{det}\left(\frac{\partial f_j(x_j,\theta_j)}{\partial x_j}\right)} 
+                \sqrt{\text{det}\left(\frac{\partial f_j(x_j,\theta_j)}{\partial x_j}\right)} \\
+            &= \int dx_i 
+                \Phi_i(f_i(x_i,\theta_i)) \Phi_j(f_j(x_i,\theta_j))
+                \sqrt{\text{det}\left(\frac{\partial f_i(x_i,\theta_i)}{\partial x_i}\right)}
+                \sqrt{\text{det}\left(\frac{\partial f_j(x_i,\theta_j)}{\partial x_i}\right)} \\
 \end{align*}
 $$
 

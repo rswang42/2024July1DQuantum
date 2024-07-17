@@ -56,6 +56,7 @@ Which is cloned from [this repo](https://github.com/CompPhysVienna/MLSummerSchoo
 Try to use VMC with a Gaussian-based-normalizing-flowed wavefunction ansatz,
 calculate the variational ground state.
 
+Bonus: calculating the excited states.
 
 
 

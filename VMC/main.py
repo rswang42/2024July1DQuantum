@@ -61,10 +61,7 @@ def main():
     if not isinstance(total_num_of_states, int):
         raise TypeError("total number of states must be integer!")
 
-    version = "sigmoid"
-    version = "FixAcceptCount"
-    version = "FockSpaceFlow-sigmoid"
-    # version = "test/testplot"
+    version = "FinalVer-FockSpaceFlow-sigmoid"
 
     # Global System settings
     batch_size = 5000
@@ -76,7 +73,7 @@ def main():
     mlp_width = 5
     mlp_depth = 3
     init_learning_rate = 1e-2
-    iterations = 30000
+    iterations = 10000
     inference_batch_size = batch_size * 2
     inference_thermal_step = 50
 
