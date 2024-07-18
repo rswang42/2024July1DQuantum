@@ -11,7 +11,6 @@ import jax
 import jax.numpy as jnp
 from flax import linen as flax_nn
 import optax
-import scipy
 import tqdm.notebook as tqdm
 
 jax.config.update("jax_enable_x64", True)
@@ -25,11 +24,11 @@ def buildH(
 ):
     """Build Hamiltonian on a discrete mesh"""
     Vx = Vpot(xmesh)
-    Vx = np.diag(Vx, 0)
+    Vx = jnp.diag(Vx, 0)
     H_kinetic = (
-        -2 * np.diag(np.ones(Nmesh, dtype=np.float64), 0)
-        + np.diag(np.ones(Nmesh - 1, dtype=np.float64), 1)
-        + np.diag(np.ones(Nmesh - 1, dtype=np.float64), -1)
+        -2 * jnp.diag(jnp.ones(Nmesh, dtype=jnp.float64), 0)
+        + jnp.diag(jnp.ones(Nmesh - 1, dtype=jnp.float64), 1)
+        + jnp.diag(jnp.ones(Nmesh - 1, dtype=jnp.float64), -1)
     ) / (2 * h**2)
     H = Vx - H_kinetic
 
@@ -1107,18 +1106,42 @@ class MLPFlow(flax_nn.Module):
 
     @flax_nn.compact
     def __call__(self, xs):
-        for i in range(self.mlp_depth):
-            _init_xs = xs
-            xs_new = []
-            for x in xs:
+        _init_xs = xs
+        xs_new = []
+        for x in xs:
+            for i in range(self.mlp_depth):
                 x = x.reshape((1,))
                 x = flax_nn.Dense(self.mlp_depth)(x)
                 x = flax_nn.sigmoid(x)
                 x = flax_nn.Dense(1)(x)
-                xs_new.append(x.reshape(-1))
-            xs = jnp.array(xs_new).reshape(_init_xs.shape)
-            xs = _init_xs + xs
+            xs_new.append(x.reshape(-1))
+        xs = jnp.array(xs_new).reshape(_init_xs.shape)
+        xs = _init_xs + xs
         return xs
+
+
+class MLPSingleFlow(flax_nn.Module):
+    """A simple MLP flow"""
+
+    out_dims: int
+    mlp_width: int
+    mlp_depth: int
+
+    def single_state(self, x):
+        """Single state flow"""
+        x = x.reshape((1,))
+        x = flax_nn.Dense(self.mlp_depth)(x)
+        x = flax_nn.sigmoid(x)
+        x = flax_nn.Dense(1)(x)
+        return x.reshape(-1)
+
+    @flax_nn.compact
+    def __call__(self, x):
+        for i in range(self.mlp_depth):
+            _init_x = x
+            x = self.single_state(x)
+            x = _init_x + x
+        return x
 
 
 def training_kernel(args: dict, savefig: bool = True) -> None:
@@ -1414,7 +1437,7 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
     # which would be <exact> if our mesh intervals are small enough
     potential_func = energy_estimator.local_potential_energy
     H = buildH(potential_func, xmesh, Nmesh, mesh_interval)
-    exact_eigenvalues, exact_eigenvectors = scipy.linalg.eigh(H)
+    exact_eigenvalues, exact_eigenvectors = jnp.linalg.eigh(H)
 
     # Training Curve
     trained_states_energy = exact_eigenvalues[state_indices]
@@ -1514,12 +1537,14 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
 
     # Inference
     print("...Inferencing...")
+    inference_init_width = 3.0
+    print(f"Inferencing init width = {inference_init_width}")
     key, subkey = jax.random.split(key)
     xs_inference = init_batched_x(
         key=subkey,
         batch_size=inference_batch_size,
         num_of_orbs=state_indices.shape[0],
-        init_width=init_width,
+        init_width=inference_init_width,
     )
     if log_domain:
         probability_batched = (

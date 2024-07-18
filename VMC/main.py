@@ -64,18 +64,18 @@ def main():
     version = "FinalVer-FockSpaceFlow-sigmoid"
 
     # Global System settings
-    batch_size = 5000
+    batch_size = 50000
     thermal_step = 50
     acc_steps = 1
-    mc_steps = 100
+    mc_steps = 200
     step_size = 1.0
-    init_width = 2.0
+    init_width = 20.0
     mlp_width = 5
     mlp_depth = 3
-    init_learning_rate = 1e-2
-    iterations = 20000
+    init_learning_rate = 5e-3
+    iterations = 50000
     inference_batch_size = batch_size * 2
-    inference_thermal_step = 50
+    inference_thermal_step = 200
 
     figure_save_path = f"./figure/{version}/StateIndices{state_indices}/"
 
