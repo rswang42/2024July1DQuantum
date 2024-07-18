@@ -244,7 +244,9 @@ class EnergyEstimator:
         Returns:
             local_potential: the local potential energy.
         """
-        local_potentials = 3 * xs**4 + xs**3 / 2 - 3 * xs**2
+        # local_potentials = 3 * xs**2
+        # local_potentials = xs**2 + xs**4
+        local_potentials = xs**2 + 10 * xs**4
         return local_potentials
 
     def local_energy(

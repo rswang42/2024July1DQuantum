@@ -63,6 +63,8 @@ def main():
 
     version = "sigmoid"
     version = "FixAcceptCount"
+    version = "testHarmonic3"
+    version = "x^2+10x^4"
     # version = "test/testplot"
 
     # Global System settings
