@@ -104,7 +104,7 @@ $$
   - And hence $\langle \Psi_i | \Psi_j \rangle = 0, i \neq j$
 - Then we have
 $$
-\langle \Psi_i | \Psi_j \rangle = \delta_{ij}
+\langle \Psi_i | \Psi_j \rangle = \delta_{ij} \quad (1)
 $$
 
 Which is the orthonormality condition.
@@ -134,4 +134,14 @@ $$
 
 The idea is simply that, **find the best variant estimation of the i-th excited state within the `i-th` direct product subspace of the i-th copied (but the same) Hamiltonian**.
 
+**One More Thing**
 
+Since we are able to flow each state in one separated direct product subspace, it **makes multiplying a learnable factor which depends on coordinate to the wavefunction while persisting orthonormality possible**
+
+$$
+\Psi_n(x_n) = g_n(x_n,\theta_n)\Phi_n(f_n(x_n,\theta_n)) \sqrt{\text{det}\left(\frac{\partial f_n(x_n,\theta_n)}{\partial x_n}\right)}
+$$
+
+The orthonormality condition still holds like it is established in eq(1), since the learnable prefactor $g_n(x_n,\theta_n)$ **only lies within the `n-th` subspace of the direct product space**.
+
+This would help to enhance the expressibility of the flow, since it offers a more flexible way to modulate the amplitudes of different states.

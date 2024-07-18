@@ -62,18 +62,19 @@ def main():
         raise TypeError("total number of states must be integer!")
 
     version = "FinalVer-FockSpaceFlow-sigmoid"
+    version = "TestPrefactor"
 
     # Global System settings
-    batch_size = 50000
+    batch_size = 10000
     thermal_step = 50
     acc_steps = 1
-    mc_steps = 200
+    mc_steps = 50
     step_size = 1.0
     init_width = 20.0
     mlp_width = 5
     mlp_depth = 3
     init_learning_rate = 5e-3
-    iterations = 50000
+    iterations = 30000
     inference_batch_size = batch_size * 2
     inference_thermal_step = 200
 

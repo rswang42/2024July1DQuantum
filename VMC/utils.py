@@ -200,7 +200,8 @@ class WFAnsatz:
                 in state_indices.
         """
         # zs: (num_of_orbs,)
-        zs = self.flow.apply(params, xs)
+        # prefactors: (num_of_orbs,)
+        zs, prefactors = self.flow.apply(params, xs)
 
         vmapped_log_wf_base = jax.vmap(
             log_wf_base,
@@ -210,8 +211,12 @@ class WFAnsatz:
         # logphis: (num_of_orbs,)
         log_phis = vmapped_log_wf_base(zs, state_indices)
 
+        log_prefactors = jnp.log(prefactors)
+
         def _flow_func(xs):
-            return self.flow.apply(params, xs).reshape(-1)
+            new_xs, _ = self.flow.apply(params, xs)
+            new_xs = new_xs.reshape(-1)
+            return new_xs
 
         # jac: (num_of_orbs,num_of_orbs)
         jac = jax.jacfwd(_flow_func)(xs)
@@ -220,7 +225,7 @@ class WFAnsatz:
         jac_fock = jnp.diagonal(jac)
         logjacdet_fock = jnp.log(jnp.abs(jac_fock))
 
-        log_amplitudes = log_phis + 0.5 * logjacdet_fock
+        log_amplitudes = log_prefactors + log_phis + 0.5 * logjacdet_fock
         return log_amplitudes
 
     def wf_ansatz_fock(
@@ -252,7 +257,7 @@ class WFAnsatz:
                 log|psi| corresponding to each orbitals
                 in state_indices.
         """
-        zs = self.flow.apply(params, xs)
+        zs, prefactors = self.flow.apply(params, xs)
 
         vmapped_wf_base = jax.vmap(
             wf_base,
@@ -262,14 +267,16 @@ class WFAnsatz:
         phis = vmapped_wf_base(zs, state_indices)
 
         def _flow_func(xs):
-            return self.flow.apply(params, xs).reshape(-1)
+            new_xs, _ = self.flow.apply(params, xs)
+            new_xs = new_xs.reshape(-1)
+            return new_xs
 
         jac = jax.jacfwd(_flow_func)(xs)
 
         jac_fock = jnp.diagonal(jac)
         jacdet_fock = jnp.sqrt(jnp.abs(jac_fock))
 
-        amplitudes = phis * jacdet_fock
+        amplitudes = prefactors * phis * jacdet_fock
         return amplitudes
 
 
@@ -1107,6 +1114,7 @@ class MLPFlow(flax_nn.Module):
     @flax_nn.compact
     def __call__(self, xs):
         _init_xs = xs
+        pre_factors = []
         xs_new = []
         for x in xs:
             for i in range(self.mlp_depth):
@@ -1114,10 +1122,13 @@ class MLPFlow(flax_nn.Module):
                 x = flax_nn.Dense(self.mlp_depth)(x)
                 x = flax_nn.sigmoid(x)
                 x = flax_nn.Dense(1)(x)
+            prefactor = flax_nn.sigmoid(x)
             xs_new.append(x.reshape(-1))
+            pre_factors.append(prefactor.reshape(-1))
         xs = jnp.array(xs_new).reshape(_init_xs.shape)
+        pre_factors = jnp.array(pre_factors).reshape(_init_xs.shape)
         xs = _init_xs + xs
-        return xs
+        return xs, pre_factors
 
 
 class MLPSingleFlow(flax_nn.Module):
@@ -1223,8 +1234,13 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
         lambda leaf: 0.5 * jax.random.truncated_normal(subkey, -2.0, 2.0, leaf.shape),
         params,
     )
+
     # Initial Jacobian
-    init_jacobian = jax.jacfwd(lambda x: model_flow.apply(params, x))(x_dummy)
+    def _flow_only_return_xs(xs):
+        result_xs, _ = model_flow.apply(params, xs)
+        return result_xs
+
+    init_jacobian = jax.jacfwd(_flow_only_return_xs)(x_dummy)
     if (jnp.diagonal(jnp.abs(init_jacobian - 1.0)) > 0.2).any():
         raise ValueError(
             "Init Jacobian too far from identity!\n"
