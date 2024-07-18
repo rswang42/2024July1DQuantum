@@ -1,6 +1,7 @@
 """Support Functionalities"""
 
 from functools import partial
+import itertools
 import time
 import os
 
@@ -201,7 +202,7 @@ class WFAnsatz:
         """
         # zs: (num_of_orbs,)
         # prefactors: (num_of_orbs,)
-        zs, prefactors = self.flow.apply(params, xs)
+        zs = self.flow.apply(params, xs)
 
         vmapped_log_wf_base = jax.vmap(
             log_wf_base,
@@ -211,10 +212,8 @@ class WFAnsatz:
         # logphis: (num_of_orbs,)
         log_phis = vmapped_log_wf_base(zs, state_indices)
 
-        log_prefactors = jnp.log(prefactors)
-
         def _flow_func(xs):
-            new_xs, _ = self.flow.apply(params, xs)
+            new_xs = self.flow.apply(params, xs)
             new_xs = new_xs.reshape(-1)
             return new_xs
 
@@ -225,7 +224,7 @@ class WFAnsatz:
         jac_fock = jnp.diagonal(jac)
         logjacdet_fock = jnp.log(jnp.abs(jac_fock))
 
-        log_amplitudes = log_prefactors + log_phis + 0.5 * logjacdet_fock
+        log_amplitudes = log_phis + 0.5 * logjacdet_fock
         return log_amplitudes
 
     def wf_ansatz_fock(
@@ -257,7 +256,7 @@ class WFAnsatz:
                 log|psi| corresponding to each orbitals
                 in state_indices.
         """
-        zs, prefactors = self.flow.apply(params, xs)
+        zs = self.flow.apply(params, xs)
 
         vmapped_wf_base = jax.vmap(
             wf_base,
@@ -267,7 +266,7 @@ class WFAnsatz:
         phis = vmapped_wf_base(zs, state_indices)
 
         def _flow_func(xs):
-            new_xs, _ = self.flow.apply(params, xs)
+            new_xs = self.flow.apply(params, xs)
             new_xs = new_xs.reshape(-1)
             return new_xs
 
@@ -276,7 +275,7 @@ class WFAnsatz:
         jac_fock = jnp.diagonal(jac)
         jacdet_fock = jnp.sqrt(jnp.abs(jac_fock))
 
-        amplitudes = prefactors * phis * jacdet_fock
+        amplitudes = phis * jacdet_fock
         return amplitudes
 
 
@@ -1114,7 +1113,6 @@ class MLPFlow(flax_nn.Module):
     @flax_nn.compact
     def __call__(self, xs):
         _init_xs = xs
-        pre_factors = []
         xs_new = []
         for x in xs:
             for i in range(self.mlp_depth):
@@ -1122,13 +1120,10 @@ class MLPFlow(flax_nn.Module):
                 x = flax_nn.Dense(self.mlp_depth)(x)
                 x = flax_nn.sigmoid(x)
                 x = flax_nn.Dense(1)(x)
-            prefactor = flax_nn.sigmoid(x)
             xs_new.append(x.reshape(-1))
-            pre_factors.append(prefactor.reshape(-1))
         xs = jnp.array(xs_new).reshape(_init_xs.shape)
-        pre_factors = jnp.array(pre_factors).reshape(_init_xs.shape)
         xs = _init_xs + xs
-        return xs, pre_factors
+        return xs
 
 
 class MLPSingleFlow(flax_nn.Module):
@@ -1237,7 +1232,7 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
 
     # Initial Jacobian
     def _flow_only_return_xs(xs):
-        result_xs, _ = model_flow.apply(params, xs)
+        result_xs = model_flow.apply(params, xs)
         return result_xs
 
     init_jacobian = jax.jacfwd(_flow_only_return_xs)(x_dummy)
@@ -1551,17 +1546,61 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
         plt.show()
     plt.close()
 
+    ortho_check = False
+    if ortho_check:
+        if state_indices.shape[0] > 1:
+            print("Checking Orthonormality...")
+            orthonormality_check = {}
+            for i, j in itertools.combinations(list(state_indices), r=2):
+                wf_on_mesh_i = wfs_on_mesh[:, i]
+                wf_on_mesh_j = wfs_on_mesh[:, j]
+                if log_domain:
+                    print(
+                        "NOTE: Orthonormality check for log domain not yet implemented!"
+                    )
+                    # normalize_factor_i = jnp.sqrt((jnp.exp(wf_on_mesh_i * 2)).sum() )
+                    # normalize_factor_j = jnp.sqrt((jnp.exp(wf_on_mesh_j * 2)).sum() )
+                    # wf_on_mesh_i_normalized = wf_on_mesh_i / normalize_factor_i
+                    # wf_on_mesh_j_normalized = wf_on_mesh_j / normalize_factor_j
+                else:
+                    normalize_factor_ansatz_i = jnp.sqrt(
+                        (wf_on_mesh_i**2).sum() * mesh_interval
+                    )
+                    normalize_factor_ansatz_j = jnp.sqrt(
+                        (wf_on_mesh_j**2).sum() * mesh_interval
+                    )
+                exact_wf_on_mesh_i = exact_eigenvectors[:, i]
+                exact_wf_on_mesh_j = exact_eigenvectors[:, j]
+                normalize_factor_i = jnp.sqrt((exact_wf_on_mesh_i**2).sum())
+                normalize_factor_j = jnp.sqrt((exact_wf_on_mesh_j**2).sum())
+                exact_wf_i_normalized = exact_wf_on_mesh_i / normalize_factor_i
+                exact_wf_j_normalized = exact_wf_on_mesh_j / normalize_factor_j
+                # NOTE: here wf are real
+                inner_product = jnp.sum(
+                    (wf_on_mesh_i / normalize_factor_ansatz_i)
+                    * (wf_on_mesh_j / normalize_factor_ansatz_j)
+                )
+                exact_inner_product = jnp.sum(
+                    exact_wf_i_normalized * exact_wf_j_normalized
+                )
+                orthonormality_check[f"InnerProduct-states({i},{j})"] = inner_product
+                orthonormality_check[f"InnerProduct-states-Exact({i},{j})"] = (
+                    exact_inner_product
+                )
+        print(f"Inner products of transformed states:\n{orthonormality_check}")
+
     # Inference
     print("...Inferencing...")
-    inference_init_width = 3.0
-    print(f"Inferencing init width = {inference_init_width}")
-    key, subkey = jax.random.split(key)
-    xs_inference = init_batched_x(
-        key=subkey,
-        batch_size=inference_batch_size,
-        num_of_orbs=state_indices.shape[0],
-        init_width=inference_init_width,
-    )
+    # inference_init_width = init_width
+    # print(f"Inferencing init width = {inference_init_width}")
+    # key, subkey = jax.random.split(key)
+    # xs_inference = init_batched_x(
+    #     key=subkey,
+    #     batch_size=inference_batch_size,
+    #     num_of_orbs=state_indices.shape[0],
+    #     init_width=inference_init_width,
+    # )
+    xs_inference = xs
     if log_domain:
         probability_batched = (
             jax.vmap(wf_ansatz_fock, in_axes=(None, 0, None))(
