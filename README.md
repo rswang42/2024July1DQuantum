@@ -1,3 +1,9 @@
+# Branches
+
+`fockflow`: the frozen Fock Flow version, see `CanWeFlowStateByState.md` for more instruction.
+
+`singleflow`: the oringinal style flow, environment ready for production.
+
 # 1D Quantum
 Originated from July, 2024, served as a internship object.
 
