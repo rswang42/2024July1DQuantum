@@ -1,5 +1,11 @@
 # Can we flow state by state?
 
+> **NOTE: The method stated below is IDENTICAL to enlarging the pamameter numbers of the network!**
+>
+> Since the ONLY thing we do here is to COPY our network with the same architecture n times with individual parameters!
+>
+> May be useful if we've already reach the architecture preformance ceiling, but if there is plenty of room for enhancing the expressibility of the network, try that first!
+
 ## Orthonormality
 
 Suppose we are dealing with totally `n+1` states (ground state

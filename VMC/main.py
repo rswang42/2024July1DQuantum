@@ -65,14 +65,14 @@ def main():
     version = "NoPrefactor"
 
     # Global System settings
-    batch_size = 20000
+    batch_size = 10000
     thermal_step = 50
     acc_steps = 1
-    mc_steps = 100
+    mc_steps = 50
     step_size = 1.0
     init_width = 20.0
-    mlp_width = 50
-    mlp_depth = 20
+    mlp_width = 1
+    mlp_depth = 5
     init_learning_rate = 5e-3
     iterations = 30000
     inference_batch_size = batch_size
