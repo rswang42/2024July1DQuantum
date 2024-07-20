@@ -7,7 +7,6 @@ import jax
 
 from VMC.utils import training_kernel
 
-jax.config.update("jax_enable_x64", True)
 
 # Plotting Settings
 plt.rcParams["figure.figsize"] = [8, 6]
@@ -65,6 +64,7 @@ def main():
     version = "FixAcceptCount"
     version = "testHarmonic3"
     version = "x^2+10x^4"
+    version = "testMLPPositiveInit"
     # version = "test/testplot"
 
     # Global System settings
@@ -74,12 +74,12 @@ def main():
     mc_steps = 50
     step_size = 1.0
     init_width = 2.0
-    mlp_width = 5
-    mlp_depth = 3
-    init_learning_rate = 0.1
+    mlp_width = 10
+    mlp_depth = 1
+    init_learning_rate = 1e-2
     iterations = 10000
-    inference_batch_size = batch_size * 2
     inference_thermal_step = 50
+    params_init_width = 1e-2
 
     figure_save_path = f"./figure/{version}/StateIndices{state_indices}/"
 
@@ -99,13 +99,13 @@ def main():
         "mlp_depth": mlp_depth,
         "init_learning_rate": init_learning_rate,
         "iterations": iterations,
-        "inference_batch_size": inference_batch_size,
         "inference_thermal_step": inference_thermal_step,
         "figure_save_path": figure_save_path,
         "log_domain": log_domain,
         "ferminet_loss": ferminet_loss,
         "clip_factor": clip_factor,
         "wf_clip_factor": wf_clip_factor,
+        "params_init_width": params_init_width,
     }
 
     training_kernel(

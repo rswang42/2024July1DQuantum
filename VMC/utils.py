@@ -2,6 +2,7 @@
 
 from functools import partial
 import time
+import pickle
 import os
 
 import jax.ad_checkpoint
@@ -13,8 +14,6 @@ from flax import linen as flax_nn
 import optax
 import scipy
 import tqdm.notebook as tqdm
-
-jax.config.update("jax_enable_x64", True)
 
 
 def buildH(
@@ -244,9 +243,10 @@ class EnergyEstimator:
         Returns:
             local_potential: the local potential energy.
         """
+        local_potentials = 3 * xs**4 + xs**3 / 2 - 3 * xs**2
         # local_potentials = 3 * xs**2
         # local_potentials = xs**2 + xs**4
-        local_potentials = xs**2 + 10 * xs**4
+        # local_potentials = xs**2 + 10 * xs**4
         return local_potentials
 
     def local_energy(
@@ -454,12 +454,12 @@ def mcmc(
     pmove_per_orb = jnp.mean(cond, axis=0) / steps
     # mc_step_size: (num_of_orb,)
     mc_step_size = jnp.where(
-        pmove_per_orb > 0.515,
+        pmove_per_orb > 0.815,
         mc_step_size * 1.1,
         mc_step_size,
     )
     mc_step_size = jnp.where(
-        pmove_per_orb < 0.495,
+        pmove_per_orb < 0.395,
         mc_step_size * 0.9,
         mc_step_size,
     )
@@ -484,7 +484,8 @@ def init_batched_x(
         init_x: (batch_size,) the initialized (batched) x.
     """
     init_x = init_width * jax.random.normal(
-        key, shape=(batch_size, num_of_orbs), dtype=jnp.float64
+        key,
+        shape=(batch_size, num_of_orbs),
     )
     return init_x
 
@@ -899,9 +900,9 @@ class Update:
             )
 
         # Only for initialization of val in jax.lax.foriloop!
-        pmove_dummy = jnp.zeros_like(self.state_indices, dtype=jnp.float64)
+        pmove_dummy = jnp.zeros_like(self.state_indices, dtype=jnp.float32)
         (loss, energies), gradients = self.loss_and_grad(params, xs_batched)
-        loss = jnp.float64(0.0)
+        loss = jnp.float32(0.0)
         energies = jnp.zeros_like(energies)
         gradients = jax.tree.map(jnp.zeros_like, gradients)
         # grad = jax.tree.map(jnp.mean, gradients)
@@ -990,20 +991,20 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
     mlp_depth = args["mlp_depth"]
     init_learning_rate = args["init_learning_rate"]
     iterations = args["iterations"]
-    inference_batch_size = args["inference_batch_size"]
     inference_thermal_step = args["inference_thermal_step"]
     figure_save_path = args["figure_save_path"]
     log_domain = args["log_domain"]
     ferminet_loss = args["ferminet_loss"]
     clip_factor = args["clip_factor"]
     wf_clip_factor = args["wf_clip_factor"]
+    params_init_width = args["params_init_width"]
 
     print("======================================")
     print(f"Computed States Indices: {state_indices}")
     print("======================================")
 
     state_indices = np.array(state_indices)
-    step_size = step_size * jnp.ones_like(state_indices, dtype=jnp.float64)
+    step_size = step_size * jnp.ones_like(state_indices, dtype=jnp.float32)
 
     if savefig:
         figure_save_path = os.path.join(
@@ -1016,6 +1017,7 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
             f"thrstp_{thermal_step}/",
             f"acc_{acc_steps}/",
             f"xinitwidth_{init_width}/",
+            f"paramsinitwidth_{params_init_width}/",
         )
 
         if clip_factor:
@@ -1044,11 +1046,14 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
 
     model_flow = MLPFlow(out_dims=1, mlp_width=mlp_width, mlp_depth=mlp_depth)
     key, subkey = jax.random.split(key)
-    x_dummy = jnp.array(0.0, dtype=jnp.float64)
+    x_dummy = jnp.array(
+        0.0,
+    )
     key, subkey = jax.random.split(key)
     params = model_flow.init(subkey, x_dummy)
     params = jax.tree.map(
-        lambda leaf: 0.1 * jax.random.truncated_normal(subkey, -2.0, 2.0, leaf.shape),
+        lambda leaf: params_init_width
+        * jax.random.truncated_normal(subkey, 0.0, 4.0, leaf.shape),
         params,
     )
     # Initial Jacobian
@@ -1072,7 +1077,7 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
     xmin = -10
     xmax = 10
     Nmesh = 2000
-    xmesh = np.linspace(xmin, xmax, Nmesh, dtype=np.float64)
+    xmesh = np.linspace(xmin, xmax, Nmesh, dtype=np.float32)
     mesh_interval = xmesh[1] - xmesh[0]
     plt.figure()
     for i in state_indices:
@@ -1345,13 +1350,7 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
 
     # Inference
     print("...Inferencing...")
-    key, subkey = jax.random.split(key)
-    xs_inference = init_batched_x(
-        key=subkey,
-        batch_size=inference_batch_size,
-        num_of_orbs=state_indices.shape[0],
-        init_width=init_width,
-    )
+    xs_inference = xs
     if log_domain:
         probability_batched = (
             jax.vmap(wf_vmapped, in_axes=(None, 0, None))(
@@ -1420,6 +1419,36 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
         print(f"Exact Result with {state_indices} states:\n")
         for energyi in exact_eigenvalues[state_indices]:
             print(f"n={i}\tenergy={energyi:.5f}\n")
+
+    print("Saving trained variables...")
+    freeze_data = {
+        "xs": xs,
+        "key": key,
+        "state_indices": state_indices,
+        "params": params,
+    }
+    if savefig:
+        filepath = os.path.join(figure_save_path, "checkpoint.pkl")
+        with open(filepath, "wb") as f:
+            pickle.dump(freeze_data, f)
+    print("Done")
+
+    print("Plotting z=f(x)...")
+    filename = os.path.join(figure_save_path, "f(x)-x")
+
+    def _flow_for_vmap(x):
+        return model_flow.apply(params, x)
+
+    flow_vmapped = jax.vmap(
+        _flow_for_vmap,
+    )
+    z_mesh = flow_vmapped(xmesh)
+    plt.figure()
+    plt.plot(xmesh, z_mesh)
+    plt.xlabel("x")
+    plt.ylabel("z=f(x)")
+    plt.savefig(filename)
+    print("Figure saved.")
 
     print("======================================")
     print(f"Computed States Indices: {state_indices}")
