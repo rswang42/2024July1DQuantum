@@ -15,6 +15,8 @@ import scipy.linalg
 sys.path.append("../../")
 
 from VMC.utils import wf_base
+from VMC.utils import buildH
+from VMC.utils import EnergyEstimator as VMCEnergyEstimator
 
 # Plotting Settings
 plt.rcParams["figure.figsize"] = [8, 6]
@@ -254,17 +256,20 @@ def main():
     xmesh = jnp.linspace(xmin, xmax, Nmesh)
     interval = xmesh[1] - xmesh[0]
 
-    n = 50
+    n = 30
 
     wavefunction_obj = WFAnsatzAnyRot()
     wf_gs = wavefunction_obj.wf_ansatze_gs
+    wf_1st = wavefunction_obj.wf_ansatze_1st
     wf_gs_vmapped = jax.vmap(wf_gs, in_axes=(None, 0))
+    wf_first_vmapped = jax.vmap(wf_1st, in_axes=(None, 0))
     energy_estimator = EnergyEstimatorAnyRot(wavefunction_obj, xmesh=xmesh)
 
     params = jnp.eye(n)
 
     totalen = any_rotate(energy_estimator, params)
-    print(f"init params=\n{params}\ntotal energy={totalen}")
+    print("Parameterizing U = jax.scipy.linalg.expm(A - A.T)\n")
+    print(f"init A=\n{params}\ntotal energy={totalen}")
 
     # def minimize_func(thetas):
     #     return three_dim_rotate(energy_estimator,thetas)
@@ -286,13 +291,13 @@ def main():
     init_val = (opt_state, params)
     (opt_state, params) = jax.lax.fori_loop(
         0,
-        5000,
+        1000,
         update_body,
         init_val,
     )
     totalen = any_rotate(energy_estimator, params)
     print("=" * 50)
-    print(f"after optimization\n thetas=\n{params},\n totalenergy = {totalen}")
+    print(f"after optimization\n A=\n{params},\n ")
 
     print("=" * 50)
     print("Testing Orthogonality After Optimization...")
@@ -306,12 +311,38 @@ def main():
         pickle.dump(params, f)
     print("Done")
 
+    # Finite Differential Method
+    # which would be <exact> if our mesh intervals are small enough
+    potential_func = VMCEnergyEstimator.local_potential_energy
+    H = buildH(potential_func, xmesh, Nmesh, interval)
+    exact_eigenvalues, exact_eigenvectors = scipy.linalg.eigh(H)
+    trained_states_energy = exact_eigenvalues[range(2)]
+    expectedenergy = np.sum(trained_states_energy)
+    print(
+        f"After optimization,\nTotal energy = {totalen}\nRef Energy = {expectedenergy}"
+    )
+
     plt.figure()
-    wf_gs_on_mesh = wf_gs_vmapped(params, xmesh)
-    normalize_gs = jnp.sum(wf_gs_vmapped(params, xmesh) ** 2 * interval)
-    wf_gs_on_mesh = wf_gs_on_mesh / jnp.sqrt(normalize_gs)
-    plt.plot(xmesh, wf_gs_on_mesh)
-    plt.xlim(-3.5, 3.5)
+    for i in range(2):
+        if i == 0:
+            wf_gs_on_mesh = wf_gs_vmapped(params, xmesh)
+            normalize_gs = jnp.sum(wf_gs_vmapped(params, xmesh) ** 2 * interval)
+            wf_gs_on_mesh = wf_gs_on_mesh**2 / normalize_gs
+            plt.plot(xmesh, wf_gs_on_mesh, label=f"Rotated-n={i}", lw=2)
+        if i == 1:
+            wf_1st_on_mesh = wf_first_vmapped(params, xmesh)
+            normalize_1st = jnp.sum(wf_first_vmapped(params, xmesh) ** 2 * interval)
+            wf_1st_on_mesh = wf_1st_on_mesh**2 / normalize_1st
+            plt.plot(xmesh, wf_1st_on_mesh, label=f"Rotated-n={i}", lw=2)
+
+        exact_wf_on_mesh = exact_eigenvectors[:, i]
+        normalize_factor = (exact_wf_on_mesh**2).sum() * interval
+        exact_prob_density = exact_wf_on_mesh**2 / normalize_factor
+        plt.plot(xmesh, exact_prob_density, "-.", label=f"Exact-n={i}", lw=1.75)
+    plt.xlim([-2.0, 2.0])
+    plt.legend()
+    plt.ylabel(r"$\rho$")
+    plt.title("Probability Density (Trained and Compare)")
 
 
 if __name__ == "__main__":

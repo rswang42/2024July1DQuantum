@@ -6,6 +6,7 @@ import pickle
 import os
 
 import jax.ad_checkpoint
+import jax.flatten_util
 import matplotlib.pyplot as plt
 import numpy as np
 import jax
@@ -101,6 +102,70 @@ def log_wf_base(
     return log_psi
 
 
+def wf_base_indices_vmapped(x: jax.Array, indices: jax.Array) -> jax.Array:
+    """Vmapped wf base w.r.t. indices
+
+    Args:
+        x: the coordinate
+        indices: (n,) the state indices, for example
+            [0,1,2]
+
+    Returns:
+        (n,) The corresponding array of different excited wavefunctions.
+    """
+    return jax.vmap(wf_base, in_axes=(None, 0))(x, indices)
+
+
+def wf_base_rotated(
+    x: float | jax.Array,
+    n: int,
+) -> jax.Array:
+    """The wave function ansatz (Rotated Gaussian)
+    NOTE: Rotated! Rotation is solved in rotate_basis.py
+    NOTE: Rotated total states should be larger than called argument n.
+
+    Args:
+        x: the 1D coordinate of the (single) particle.
+        n: the excitation quantum number
+
+        NOTE: n=0 for GS!
+
+    Returns:
+        psi: the probability amplitude at x.
+    """
+    rotparams = "./VMC/rotate_basis_01/RotParams.pkl"
+    with open(rotparams, "rb") as f:
+        A = pickle.load(f)
+    rot_total_states = A.shape[0]
+    rot_matrix = jax.scipy.linalg.expm(A - A.T)
+    mix_indices = jnp.array(range(rot_total_states))
+    mix_rot_coeff = rot_matrix[n]
+    wf_for_mix = wf_base_indices_vmapped(x, mix_indices)
+    psi = jnp.dot(mix_rot_coeff, wf_for_mix)
+    return psi
+
+
+def log_wf_base_rotated(
+    x: float | jax.Array,
+    n: int,
+) -> jax.Array:
+    """The wave function ansatz (Gaussian)
+    NOTE: Rotated! Rotation is solved in rotate_basis.py
+    NOTE: Only work for 0 and 1 training!
+
+    Args:
+        x: the 1D coordinate of the (single) particle.
+        n: the excitation quantum number
+
+        NOTE: n=0 for GS!
+
+    Returns:
+        log_psi: the log probability amplitude at x.
+    """
+    log_psi = jnp.log(jnp.abs(wf_base_rotated(x, n)))
+    return log_psi
+
+
 class WFAnsatz:
     """The flow wave function ansatz
 
@@ -163,7 +228,7 @@ class WFAnsatz:
             amplitude: the wavefunction
         """
         z = self.flow.apply(params, x)[0]
-        phi = wf_base(z, n)
+        phi = wf_base_rotated(z, n)
 
         def _flow_func(x):
             return self.flow.apply(params, x)[0]
@@ -247,6 +312,7 @@ class EnergyEstimator:
         # local_potentials = 3 * xs**2
         # local_potentials = xs**2 + xs**4
         # local_potentials = xs**2 + 10 * xs**4
+        # local_potentials =  xs**4/16 - xs**2 / 2 - xs
         return local_potentials
 
     def local_energy(
@@ -453,16 +519,19 @@ def mcmc(
     # pmove_per_orb: (num_of_orb,)
     pmove_per_orb = jnp.mean(cond, axis=0) / steps
     # mc_step_size: (num_of_orb,)
+
+    # TODO: try to adjust step size each 100 update iters!
     mc_step_size = jnp.where(
-        pmove_per_orb > 0.815,
-        mc_step_size * 1.1,
+        pmove_per_orb > 0.90,
+        mc_step_size * 1.05,
         mc_step_size,
     )
     mc_step_size = jnp.where(
-        pmove_per_orb < 0.395,
-        mc_step_size * 0.9,
+        pmove_per_orb < 0.295,
+        mc_step_size * 0.905,
         mc_step_size,
     )
+
     return key, xs_batched, probability_batched, mc_step_size, pmove_per_orb
 
 
@@ -487,6 +556,12 @@ def init_batched_x(
         key,
         shape=(batch_size, num_of_orbs),
     )
+    # init_x = init_width * jax.random.uniform(
+    #     key,
+    #     shape=(batch_size, num_of_orbs),
+    #     minval=-abs(init_width),
+    #     maxval=abs(init_width)
+    # )
     return init_x
 
 
@@ -900,9 +975,9 @@ class Update:
             )
 
         # Only for initialization of val in jax.lax.foriloop!
-        pmove_dummy = jnp.zeros_like(self.state_indices, dtype=jnp.float32)
+        pmove_dummy = jnp.zeros_like(self.state_indices, dtype=jnp.float64)
         (loss, energies), gradients = self.loss_and_grad(params, xs_batched)
-        loss = jnp.float32(0.0)
+        loss = jnp.float64(0.0)
         energies = jnp.zeros_like(energies)
         gradients = jax.tree.map(jnp.zeros_like, gradients)
         # grad = jax.tree.map(jnp.mean, gradients)
@@ -953,25 +1028,78 @@ class Update:
         )
 
 
-class MLPFlow(flax_nn.Module):
+class MLPFlowPre(flax_nn.Module):
     """A simple MLP flow"""
 
     out_dims: int
     mlp_width: int
     mlp_depth: int
+    kernel_init_width: float = 0.01
+    bias_init_width: float = 10.0
 
     @flax_nn.compact
     def __call__(self, x):
         for i in range(self.mlp_depth):
             _init_x = x
             x = x.reshape(
-                1,
+                -1,
             )
-            x = flax_nn.Dense(self.mlp_width)(x)
-            x = flax_nn.sigmoid(x)
-            x = flax_nn.Dense(self.out_dims)(x)
+            x = flax_nn.Dense(
+                self.mlp_width,
+                kernel_init=flax_nn.initializers.normal(stddev=self.kernel_init_width),
+                bias_init=flax_nn.initializers.normal(
+                    stddev=self.bias_init_width,
+                ),
+            )(x)
+            x = flax_nn.tanh(x)
+            x = flax_nn.Dense(
+                self.out_dims,
+                kernel_init=flax_nn.initializers.normal(stddev=self.kernel_init_width),
+            )(x)
             x = _init_x + x
 
+        return x
+
+
+class MLPFlow(flax_nn.Module):
+    out_dims: int
+    mlp_width: int
+    mlp_depth: int
+    kernel_init_width: float = 0.01
+    bias_init_width: float = 10.0
+
+    def setup(self):
+        # we automatically know what to do with lists, dicts of submodules
+        self.layers = [
+            flax_nn.Dense(
+                self.mlp_width,
+                kernel_init=flax_nn.initializers.normal(self.kernel_init_width),
+                bias_init=flax_nn.initializers.normal(self.bias_init_width),
+            )
+            for _ in range(self.mlp_depth)
+        ]
+        self.layers2 = [
+            flax_nn.Dense(
+                self.out_dims,
+                kernel_init=flax_nn.initializers.normal(self.kernel_init_width),
+                bias_init=flax_nn.initializers.normal(self.bias_init_width),
+            )
+            for _ in range(self.mlp_depth)
+        ]
+        # for single submodules, we would just write:
+        # self.layer1 = nn.Dense(feat1)
+
+    def __call__(self, inputs):
+        x = inputs
+        for i, lyr in enumerate(self.layers):
+            _init_x = x
+            x = x.reshape(
+                -1,
+            )
+            x = lyr(x)
+            x = flax_nn.sigmoid(x)
+            x = self.layers2[i](x)
+            x = _init_x + x
         return x
 
 
@@ -998,13 +1126,15 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
     clip_factor = args["clip_factor"]
     wf_clip_factor = args["wf_clip_factor"]
     params_init_width = args["params_init_width"]
+    ckpt_filename = args["ckpt_filename"]
 
     print("======================================")
     print(f"Computed States Indices: {state_indices}")
     print("======================================")
 
     state_indices = np.array(state_indices)
-    step_size = step_size * jnp.ones_like(state_indices, dtype=jnp.float32)
+    init_step_size = step_size
+    step_size = step_size * jnp.ones_like(state_indices, dtype=jnp.float64)
 
     if savefig:
         figure_save_path = os.path.join(
@@ -1014,10 +1144,11 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
             f"mlpdep_{mlp_depth}/",
             f"initlr_{init_learning_rate:.4f}/",
             f"mcstp_{mc_steps}/",
+            f"mcinitstpsize_{init_step_size}/",
             f"thrstp_{thermal_step}/",
             f"acc_{acc_steps}/",
             f"xinitwidth_{init_width}/",
-            f"paramsinitwidth_{params_init_width}/",
+            f"paramsinitwidth_{list(params_init_width.values())}/",
         )
 
         if clip_factor:
@@ -1044,25 +1175,46 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
             # raise FileExistsError("Desitination already exists! Please check!")
             pass
 
-    model_flow = MLPFlow(out_dims=1, mlp_width=mlp_width, mlp_depth=mlp_depth)
-    key, subkey = jax.random.split(key)
-    x_dummy = jnp.array(
-        0.0,
+    if ckpt_filename is not None:
+        ckptfile = os.path.join(figure_save_path, ckpt_filename)
+        print(f"Loading ckpt file:{ckptfile}")
+        with open(ckptfile, "rb") as f:
+            ckpt_data = pickle.load(f)
+        key = ckpt_data["key"]
+
+    kernel_init_width = params_init_width["kernel"]
+    bias_init_width = params_init_width["bias"]
+    model_flow = MLPFlow(
+        out_dims=1,
+        mlp_width=mlp_width,
+        mlp_depth=mlp_depth,
+        kernel_init_width=kernel_init_width,
+        bias_init_width=bias_init_width,
     )
-    key, subkey = jax.random.split(key)
-    params = model_flow.init(subkey, x_dummy)
-    params = jax.tree.map(
-        lambda leaf: params_init_width
-        * jax.random.truncated_normal(subkey, 0.0, 4.0, leaf.shape),
-        params,
-    )
-    # Initial Jacobian
-    init_jacobian = jax.jacfwd(lambda x: model_flow.apply(params, x))(x_dummy)
-    if jnp.abs(init_jacobian - 1.0) > 0.2:
-        raise ValueError(
-            f"Init Jacobian too far from identity!\nGet init Jacobian={init_jacobian}\n"
+
+    if ckpt_filename is not None:
+        params = ckpt_data["params"]
+        params = jax.tree.map(lambda x: jnp.array(x, dtype=jnp.float64), params)
+    else:
+        x_dummy = jnp.array(
+            # -0.10455,
+            0.0,
+            dtype=jnp.float64,
         )
-    print(f"Init Jacobian = \n{init_jacobian}")
+        key, subkey = jax.random.split(key)
+        params = model_flow.init(subkey, x_dummy)
+        params = jax.tree.map(lambda x: jnp.array(x, dtype=jnp.float64), params)
+        # print(f"params={params}")
+
+        # Initial Jacobian
+        init_jacobian = jax.jacfwd(lambda x: model_flow.apply(params, x))(x_dummy)
+        # if jnp.abs(init_jacobian - 1.0) > 0.5:
+        #     raise ValueError(
+        #         f"Init Jacobian too far from identity!
+        # \nGet init Jacobian={init_jacobian}\n"
+        #     )
+        print(f"Init Jacobian at x={x_dummy} = \n{init_jacobian}")
+    print(f"Number of params:{jax.flatten_util.ravel_pytree(params)[0].size}")
 
     # Initialize Wavefunction
     wf_ansatz_obj = WFAnsatz(flow=model_flow)
@@ -1072,49 +1224,60 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
         wf_ansatz = wf_ansatz_obj.wf_ansatz
     wf_vmapped = jax.vmap(wf_ansatz, in_axes=(None, 0, 0))
 
-    # Plotting wavefunction
-    print("Wavefunction (Initialization)")
-    xmin = -10
-    xmax = 10
-    Nmesh = 2000
-    xmesh = np.linspace(xmin, xmax, Nmesh, dtype=np.float32)
+    xmin = -15
+    xmax = 15
+    Nmesh = 5000
+    xmesh = np.linspace(xmin, xmax, Nmesh, dtype=np.float64)
     mesh_interval = xmesh[1] - xmesh[0]
-    plt.figure()
-    for i in state_indices:
-        wf_on_mesh = jax.vmap(wf_ansatz, in_axes=(None, 0, None))(params, xmesh, i)
-        plt.plot(xmesh, wf_on_mesh, label=f"n={i}")
-    plt.xlim([-10, 10])
-    if log_domain:
-        plt.ylabel("log |psi|")
+
+    if ckpt_filename is not None:
+        pass
     else:
-        plt.ylabel("psi")
-    plt.legend()
-    plt.title("Wavefunction (Initialization)")
-    if savefig:
-        plt.savefig(
-            f"{os.path.join(figure_save_path, "WavefunctionInitialization.png")}"
-        )
-        print("Figure Saved.")
-    else:
-        plt.show()
-    plt.close()
+        # Plotting wavefunction
+        print("Wavefunction (Initialization)")
+
+        plt.figure()
+        for i in state_indices:
+            wf_on_mesh = jax.vmap(wf_ansatz, in_axes=(None, 0, None))(params, xmesh, i)
+            plt.plot(xmesh, wf_on_mesh, label=f"n={i}")
+        plt.xlim([-10, 10])
+        if log_domain:
+            plt.ylabel("log |psi|")
+        else:
+            plt.ylabel("psi")
+        plt.legend()
+        plt.title("Wavefunction (Initialization)")
+        if savefig:
+            plt.savefig(
+                f"{os.path.join(figure_save_path, "WavefunctionInitialization.png")}"
+            )
+            print("Figure Saved.")
+        else:
+            plt.show()
+        plt.close()
 
     # Local Energy Estimator
     energy_estimator = EnergyEstimator(wf_ansatz=wf_ansatz, log_domain=log_domain)
 
     # Metropolis, thermalization
-    key, subkey = jax.random.split(key)
-    init_x_batched = init_batched_x(
-        key=subkey,
-        batch_size=batch_size,
-        num_of_orbs=state_indices.shape[0],
-        init_width=init_width,
-    )
     metropolis = Metropolis(wf_ansatz=wf_ansatz, log_domain=log_domain)
     metropolis_sample = metropolis.oneshot_sample
     metropolis_sample_batched = jax.jit(
         jax.vmap(metropolis_sample, in_axes=(0, None, 0, None, None, 0))
     )
+
+    if ckpt_filename is not None:
+        init_x_batched = ckpt_data["xs"]
+        init_x_batched = jnp.array(init_x_batched, dtype=jnp.float64)
+    else:
+        key, subkey = jax.random.split(key)
+        init_x_batched = init_batched_x(
+            key=subkey,
+            batch_size=batch_size,
+            num_of_orbs=state_indices.shape[0],
+            init_width=init_width,
+        )
+
     if log_domain:  # log probabilities
         probability_batched = (
             jax.vmap(wf_vmapped, in_axes=(None, 0, None))(
@@ -1182,8 +1345,22 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
     print(f"After MCMC, with initial network, loss={loss:.2f}")
 
     # Optimizer
-    optimizer = optax.adam(init_learning_rate)
-    opt_state = optimizer.init(params)
+    if ckpt_filename is not None:
+        continue_lr = 1.25 * init_learning_rate
+        print(f"Continue with learning rate={continue_lr}...")
+        optimizer = optax.adam(continue_lr)
+        # opt_state = ckpt_data["opt_state"]
+        opt_state = optimizer.init(params)
+        # print(f"params:{params}")
+        # opt_state = jax.tree.map(
+        #     lambda x: jnp.array(x,dtype=jnp.float64),
+        #     opt_state
+        # )
+        # opt_state = optax.tree_utils.tree_set(opt_state,count=jnp.int32(0))
+        # print(f"opt_state:{opt_state}")
+    else:
+        optimizer = optax.adam(init_learning_rate)
+        opt_state = optimizer.init(params)
 
     # Training
     update_obj = Update(
@@ -1426,9 +1603,17 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
         "key": key,
         "state_indices": state_indices,
         "params": params,
+        "mlp_width": mlp_width,
+        "mlp_depth": mlp_depth,
+        "opt_state": opt_state,
     }
     if savefig:
-        filepath = os.path.join(figure_save_path, "checkpoint.pkl")
+        if ckpt_filename is not None:
+            filepath = os.path.join(
+                figure_save_path, f"checkpoint_continued_{iterations}.pkl"
+            )
+        else:
+            filepath = os.path.join(figure_save_path, f"checkpoint_{iterations}.pkl")
         with open(filepath, "wb") as f:
             pickle.dump(freeze_data, f)
     print("Done")
