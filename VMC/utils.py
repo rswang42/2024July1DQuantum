@@ -166,6 +166,54 @@ def log_wf_base_rotated(
     return log_psi
 
 
+def wf_base_vscf(
+    x: float | jax.Array,
+    n: int,
+) -> jax.Array:
+    """The wave function ansatz (Rotated Gaussian)
+    NOTE: Rotated! Rotation is solved by VSCF
+    NOTE: Rotated total states should be larger than called argument n.
+
+    Args:
+        x: the 1D coordinate of the (single) particle.
+        n: the excitation quantum number
+
+        NOTE: n=0 for GS!
+
+    Returns:
+        psi: the probability amplitude at x.
+    """
+    rotparams = "./VMC/vscf/VSCFCoeff.pkl"
+    with open(rotparams, "rb") as f:
+        coeff = pickle.load(f)
+    nlevel = coeff.shape[0]
+    mix_indices = jnp.array(range(nlevel))
+    mix_rot_coeff = coeff[:, n]
+    wf_for_mix = wf_base_indices_vmapped(x, mix_indices)
+    psi = jnp.dot(mix_rot_coeff, wf_for_mix)
+    return psi
+
+
+def log_wf_base_vscf(
+    x: float | jax.Array,
+    n: int,
+) -> jax.Array:
+    """The wave function ansatz (Gaussian)
+    NOTE: Rotated! Rotation is solved by VSCF
+
+    Args:
+        x: the 1D coordinate of the (single) particle.
+        n: the excitation quantum number
+
+        NOTE: n=0 for GS!
+
+    Returns:
+        log_psi: the log probability amplitude at x.
+    """
+    log_psi = jnp.log(jnp.abs(wf_base_vscf(x, n)))
+    return log_psi
+
+
 class WFAnsatz:
     """The flow wave function ansatz
 
@@ -228,7 +276,66 @@ class WFAnsatz:
             amplitude: the wavefunction
         """
         z = self.flow.apply(params, x)[0]
-        phi = wf_base_rotated(z, n)
+        phi = wf_base(z, n)
+
+        def _flow_func(x):
+            return self.flow.apply(params, x)[0]
+
+        jac = jax.jacfwd(_flow_func)(x)
+        jacdet = jnp.sqrt(jnp.abs(jac))
+        amplitude = phi * jacdet
+        return amplitude
+
+    def vscf_log_wf_ansatz(
+        self,
+        params: jax.Array | np.ndarray,
+        x: float | jax.Array,
+        n: int,
+    ) -> jax.Array:
+        """The flow transformed log wavefunction
+
+        Args:
+            params: the flow parameter
+            x: the coordinate before flow
+            n: the excitation quantum number
+
+        Returns:
+            log_amplitude: the log wavefunction
+                log|psi|
+        """
+        z = self.flow.apply(params, x)[0]
+        log_phi = log_wf_base_vscf(z, n)
+
+        def _flow_func(x):
+            return self.flow.apply(params, x)[0]
+
+        jac = jax.jacfwd(_flow_func)(x)
+        # _,logjacdet = jnp.linalg.slogdet(jac)
+        logjacdet = jnp.log(jnp.abs(jac))
+
+        log_amplitude = log_phi + 0.5 * logjacdet
+        return log_amplitude
+
+    def vscf_wf_ansatz(
+        self,
+        params: jax.Array | np.ndarray | dict,
+        x: float | jax.Array,
+        n: int,
+    ) -> jax.Array:
+        """The flow transformed log wavefunction
+
+        Args:
+            params: the flow parameter
+            x: the coordinate before flow
+            n: the excitation quantum number
+
+            NOTE: n=0 for GS!
+
+        Returns:
+            amplitude: the wavefunction
+        """
+        z = self.flow.apply(params, x)[0]
+        phi = wf_base_vscf(z, n)
 
         def _flow_func(x):
             return self.flow.apply(params, x)[0]
