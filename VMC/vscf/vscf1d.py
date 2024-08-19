@@ -9,13 +9,6 @@ import scipy
 import jax
 import jax.numpy as jnp
 
-import sys
-
-sys.path.append("../../")
-from VMC.utils import wf_base_indices_vmapped
-from VMC.utils import buildH
-from VMC.utils import EnergyEstimator as VMCEnergyEstimator
-
 # Plotting Settings
 plt.rcParams["figure.figsize"] = [8, 6]
 plt.rcParams["figure.dpi"] = 600
@@ -160,6 +153,34 @@ def _wf_base_vscf(
     return psi
 
 
+class VSCF:
+    """VSCF"""
+
+    def __init__(self, nlevel: int) -> None:
+        self.nlevel = nlevel
+
+    def solver(self):
+        """Solve VSCF
+
+        Returns:
+            energies: (nlevel,) the eigenvalues of different energy levels.
+            coeff: (nlevel,nlevel) the corresponding eigenvectors of the
+                eigenvalues, NOTE the i-th column is corresponding to the
+                i-th eigenvalue: coeff[:,i] is the coefficients corresponding
+                to the i-th energy level.
+        """
+        nlevel = self.nlevel
+        print(f"VSCF with Nlevel = {nlevel}")
+        integrallist = IntegrealList(nlevels=nlevel)
+        kinetic = integrallist.psi_kinetic_psi
+        secondterm = integrallist.psi_q2_psi
+        thirdterm = integrallist.psi_q3_psi
+        quarticterm = integrallist.psi_q4_psi
+        hamiltonian = kinetic - 3 * secondterm + thirdterm / 2 + 3 * quarticterm
+        energies, coeff = np.linalg.eigh(hamiltonian)
+        return energies, coeff
+
+
 def main():
     """Man"""
 
@@ -180,14 +201,8 @@ def main():
     wf_gs_vmapped = jax.vmap(wf_gs, in_axes=(None, 0))
     wf_first_vmapped = jax.vmap(wf_1st, in_axes=(None, 0))
 
-    print(f"VSCF with Nlevel = {nlevel}")
-    integrallist = IntegrealList(nlevels=nlevel)
-    kinetic = integrallist.psi_kinetic_psi
-    secondterm = integrallist.psi_q2_psi
-    thirdterm = integrallist.psi_q3_psi
-    quarticterm = integrallist.psi_q4_psi
-    hamiltonian = kinetic - 3 * secondterm + thirdterm / 2 + 3 * quarticterm
-    energies, coeff = np.linalg.eigh(hamiltonian)
+    vscf_obj = VSCF(nlevel=nlevel)
+    energies, coeff = vscf_obj.solver()
     totalen = np.sum(energies[:2:])
 
     print("=" * 50)
@@ -232,6 +247,13 @@ def main():
 
 
 if __name__ == "__main__":
+    import sys
+
+    sys.path.append("../../")
+    from VMC.utils import wf_base_indices_vmapped
+    from VMC.utils import buildH
+    from VMC.utils import EnergyEstimator as VMCEnergyEstimator
+
     main()
 
 # %%

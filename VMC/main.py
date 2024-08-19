@@ -7,7 +7,7 @@ import jax
 
 from VMC.utils import training_kernel
 
-# jax.config.update("jax_enable_x64", True)
+jax.config.update("jax_enable_x64", True)
 
 # Plotting Settings
 plt.rcParams["figure.figsize"] = [8, 6]
@@ -52,6 +52,17 @@ def main():
         default=None,
         help="Designate for continue from chekpoint",
     )
+    parser.add_argument(
+        "--vscf",
+        action="store_true",
+        help="Set this to use VSCF basis.",
+    )
+    parser.add_argument(
+        "--nlevel",
+        type=int,
+        default=None,
+        help="The number of levels used in VSCF for single modal function.",
+    )
     input_args = parser.parse_args()
 
     log_domain = input_args.log_domain
@@ -60,6 +71,8 @@ def main():
     wf_clip_factor = input_args.wfclip
     state_indices = input_args.state_indices
     ckpt_filename = input_args.ckpt_filename
+    vscf = input_args.vscf
+    nlevel = input_args.nlevel
 
     total_num_of_states = len(state_indices)
 
@@ -68,42 +81,27 @@ def main():
     if not isinstance(total_num_of_states, int):
         raise TypeError("total number of states must be integer!")
 
-    version = "sigmoid"
-    version = "FixAcceptCount"
-    version = "testHarmonic3"
-    version = "x^2+10x^4"
-    version = "testMLPPositiveInit"
-    version = "OriginHermite"
-    # version = "x^4_16-x^2_2-x"
-    # version = "test/testplot"
-    version = "0-1Benchmark"
-    version = "NonMonotonous"
-    version = "tanh"
-    version = "swish"
-    # version = "linear"
-    version = "New0-1Benchmark"
-    version = "NewTanh"
-    version = "NewSigmoid"
-    version = "Rotated"
-    version = "Rotated30"
-    version = "NoRotate"
+    if vscf:
+        version = "VSCF"
+    else:
+        version = "NoVSCF"
 
     # Global System settings
     batch_size = 200
-    mlp_width = 500
-    mlp_depth = 2
+    mlp_width = 100
+    mlp_depth = 1
     init_learning_rate = 5e-3
     # NOTE: Sufficient MCMC Sampling
     # is VITAL!
     # For example, calculating 0,1
     # The suggesting batch-mc_step-step_size combination is
     # batch_size=200 with mc_step=1500 and step_size=0.3
-    mc_steps = 1500
+    mc_steps = 150
     step_size = 0.3
     thermal_step = 100
     acc_steps = 1
     init_width = 1.0
-    iterations = 10000
+    iterations = 1000
     inference_thermal_step = 1000
     params_init_width = {"kernel": 0.0005, "bias": 0.0}
 
@@ -133,6 +131,8 @@ def main():
         "wf_clip_factor": wf_clip_factor,
         "params_init_width": params_init_width,
         "ckpt_filename": ckpt_filename,
+        "vscf": vscf,
+        "nlevel": nlevel,
     }
 
     training_kernel(

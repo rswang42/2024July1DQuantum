@@ -16,6 +16,8 @@ import optax
 import scipy
 import tqdm.notebook as tqdm
 
+from VMC.vscf.vscf1d import VSCF
+
 
 def buildH(
     Vpot: callable,
@@ -167,6 +169,7 @@ def log_wf_base_rotated(
 
 
 def wf_base_vscf(
+    vscf_coeff: np.ndarray,
     x: float | jax.Array,
     n: int,
 ) -> jax.Array:
@@ -175,6 +178,10 @@ def wf_base_vscf(
     NOTE: Rotated total states should be larger than called argument n.
 
     Args:
+        vscf_coeff: (nlevel,nlevel) the corresponding eigenvectors of the
+            eigenvalues, NOTE the i-th column is corresponding to the
+            i-th eigenvalue: coeff[:,i] is the coefficients corresponding
+            to the i-th energy level.
         x: the 1D coordinate of the (single) particle.
         n: the excitation quantum number
 
@@ -183,9 +190,7 @@ def wf_base_vscf(
     Returns:
         psi: the probability amplitude at x.
     """
-    rotparams = "./VMC/vscf/VSCFCoeff.pkl"
-    with open(rotparams, "rb") as f:
-        coeff = pickle.load(f)
+    coeff = vscf_coeff
     nlevel = coeff.shape[0]
     mix_indices = jnp.array(range(nlevel))
     mix_rot_coeff = coeff[:, n]
@@ -195,22 +200,26 @@ def wf_base_vscf(
 
 
 def log_wf_base_vscf(
+    vscf_coeff: np.ndarray,
     x: float | jax.Array,
     n: int,
 ) -> jax.Array:
-    """The wave function ansatz (Gaussian)
+    """The wave function ansatz (Rotated Gaussian)
     NOTE: Rotated! Rotation is solved by VSCF
+    NOTE: Rotated total states should be larger than called argument n.
 
     Args:
-        x: the 1D coordinate of the (single) particle.
-        n: the excitation quantum number
+        vscf_coeff: (nlevel,nlevel) the corresponding eigenvectors of the
+            eigenvalues, NOTE the i-th column is corresponding to the
+            i-th eigenvalue: coeff[:,i] is the coefficients corresponding
+            to the i-th energy level.
 
         NOTE: n=0 for GS!
 
     Returns:
         log_psi: the log probability amplitude at x.
     """
-    log_psi = jnp.log(jnp.abs(wf_base_vscf(x, n)))
+    log_psi = jnp.log(jnp.abs(wf_base_vscf(vscf_coeff, x, n)))
     return log_psi
 
 
@@ -219,13 +228,12 @@ class WFAnsatz:
 
     Attributes:
         self.flow: the normalizing flow network
+        self.vscf_coeff: the vscf coefficients if provided
     """
 
-    def __init__(
-        self,
-        flow: flax_nn.Module,
-    ) -> None:
+    def __init__(self, flow: flax_nn.Module, vscf_coeff: np.ndarray = None) -> None:
         self.flow = flow
+        self.vscf_coeff = vscf_coeff
 
     def log_wf_ansatz(
         self,
@@ -304,7 +312,7 @@ class WFAnsatz:
                 log|psi|
         """
         z = self.flow.apply(params, x)[0]
-        log_phi = log_wf_base_vscf(z, n)
+        log_phi = log_wf_base_vscf(self.vscf_coeff, z, n)
 
         def _flow_func(x):
             return self.flow.apply(params, x)[0]
@@ -335,7 +343,7 @@ class WFAnsatz:
             amplitude: the wavefunction
         """
         z = self.flow.apply(params, x)[0]
-        phi = wf_base_vscf(z, n)
+        phi = wf_base_vscf(self.vscf_coeff, z, n)
 
         def _flow_func(x):
             return self.flow.apply(params, x)[0]
@@ -1234,6 +1242,15 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
     wf_clip_factor = args["wf_clip_factor"]
     params_init_width = args["params_init_width"]
     ckpt_filename = args["ckpt_filename"]
+    vscf = args["vscf"]
+    if vscf:
+        nlevel = args["nlevel"]
+        if np.sum(state_indices) > nlevel:
+            raise ValueError(
+                "In VSCF, nlevel must larger than total number of states, "
+                f"get nlevel={nlevel} and total number of states "
+                f"to be calculated = {np.sum(state_indices)}"
+            )
 
     print("======================================")
     print(f"Computed States Indices: {state_indices}")
@@ -1244,6 +1261,9 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
     step_size = step_size * jnp.ones_like(state_indices, dtype=jnp.float64)
 
     if savefig:
+        if vscf:
+            figure_save_path = os.path.join(figure_save_path, f"vscf-nlevel_{nlevel}/")
+
         figure_save_path = os.path.join(
             figure_save_path,
             f"batch_{batch_size}/",
@@ -1324,11 +1344,23 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
     print(f"Number of params:{jax.flatten_util.ravel_pytree(params)[0].size}")
 
     # Initialize Wavefunction
-    wf_ansatz_obj = WFAnsatz(flow=model_flow)
-    if log_domain:
-        wf_ansatz = wf_ansatz_obj.log_wf_ansatz
+    if vscf:
+        vscf_obj = VSCF(nlevel=nlevel)
+        _, vscf_coeff = vscf_obj.solver()
+        wf_ansatz_obj = WFAnsatz(
+            flow=model_flow,
+            vscf_coeff=jnp.array(vscf_coeff),
+        )
+        if log_domain:
+            wf_ansatz = wf_ansatz_obj.vscf_log_wf_ansatz
+        else:
+            wf_ansatz = wf_ansatz_obj.vscf_wf_ansatz
     else:
-        wf_ansatz = wf_ansatz_obj.wf_ansatz
+        wf_ansatz_obj = WFAnsatz(flow=model_flow)
+        if log_domain:
+            wf_ansatz = wf_ansatz_obj.log_wf_ansatz
+        else:
+            wf_ansatz = wf_ansatz_obj.wf_ansatz
     wf_vmapped = jax.vmap(wf_ansatz, in_axes=(None, 0, 0))
 
     xmin = -15
