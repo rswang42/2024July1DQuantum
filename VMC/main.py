@@ -54,13 +54,14 @@ def main():
     )
     parser.add_argument(
         "--vscf",
-        action="store_true",
+        type=bool,
+        default=True,
         help="Set this to use VSCF basis.",
     )
     parser.add_argument(
         "--nlevel",
         type=int,
-        default=None,
+        default=30,
         help="The number of levels used in VSCF for single modal function.",
     )
     input_args = parser.parse_args()

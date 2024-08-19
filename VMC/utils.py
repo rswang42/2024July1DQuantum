@@ -1245,11 +1245,11 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
     vscf = args["vscf"]
     if vscf:
         nlevel = args["nlevel"]
-        if np.sum(state_indices) > nlevel:
+        if len(state_indices) > nlevel:
             raise ValueError(
                 "In VSCF, nlevel must larger than total number of states, "
                 f"get nlevel={nlevel} and total number of states "
-                f"to be calculated = {np.sum(state_indices)}"
+                f"to be calculated = {len(state_indices)}"
             )
 
     print("======================================")
@@ -1346,7 +1346,8 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
     # Initialize Wavefunction
     if vscf:
         vscf_obj = VSCF(nlevel=nlevel)
-        _, vscf_coeff = vscf_obj.solver()
+        vscf_energies, vscf_coeff = vscf_obj.solver()
+        print(f"VSCF Energy = {np.sum(vscf_energies[:len(state_indices)])}")
         wf_ansatz_obj = WFAnsatz(
             flow=model_flow,
             vscf_coeff=jnp.array(vscf_coeff),
@@ -1716,15 +1717,21 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
             f.write("=" * 50)
             f.write("\n")
             f.write(f"VMC Result with {state_indices} states:\n")
+            total_en = 0.0
             for i, energyi, stdi in zip(
                 state_indices, energy_levels, energy_levels_std
             ):
+                total_en += energyi
                 f.write(f"n={i}\tenergy={energyi:.5f}({stdi:.5f})\n")
+            f.write(f"Total Energy = {total_en}\n")
             f.write("=" * 50)
             f.write("\n")
             f.write(f"Exact Result with {state_indices} states:\n")
-            for energyi in exact_eigenvalues[state_indices]:
+            total_en = 0.0
+            for i, energyi in zip(state_indices, exact_eigenvalues[state_indices]):
+                total_en += energyi
                 f.write(f"n={i}\tenergy={energyi:.5f}\n")
+            f.write(f"Total Energy = {total_en}\n")
         print(f"Energy levels written to {filepath}")
     else:
         print("=" * 50, "\n")
@@ -1733,7 +1740,7 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
             print(f"n={i}\tenergy={energyi:.5f}({stdi[i]:.5f})\n")
         print("=" * 50, "\n")
         print(f"Exact Result with {state_indices} states:\n")
-        for energyi in exact_eigenvalues[state_indices]:
+        for i, energyi in zip(state_indices, exact_eigenvalues[state_indices]):
             print(f"n={i}\tenergy={energyi:.5f}\n")
 
     print("Saving trained variables...")

@@ -1,0 +1,20 @@
+==================================================
+VMC Result with [0 1 2 3] states:
+n=0	energy=0.18885(0.00608)
+Total Energy = 0.1888474168337722
+n=1	energy=1.73443(0.00672)
+Total Energy = 1.9232795285644215
+n=2	energy=4.56641(0.00875)
+Total Energy = 6.489691762655528
+n=3	energy=7.86696(0.02466)
+Total Energy = 14.356649666727805
+==================================================
+Exact Result with [0 1 2 3] states:
+n=0	energy=0.19458
+Total Energy = 0.1945770661199625
+n=1	energy=1.73520
+Total Energy = 1.9297740548450162
+n=2	energy=4.54953
+Total Energy = 6.47930563559383
+n=3	energy=7.82546
+Total Energy = 14.304761122233508

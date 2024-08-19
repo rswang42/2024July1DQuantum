@@ -190,7 +190,7 @@ def main():
     xmesh = jnp.linspace(xmin, xmax, Nmesh)
     interval = xmesh[1] - xmesh[0]
 
-    nlevel = 30
+    nlevel = 15
 
     def wf_gs(coeff, x):
         return _wf_base_vscf(x, 0, coeff)
@@ -206,11 +206,11 @@ def main():
     totalen = np.sum(energies[:2:])
 
     print("=" * 50)
-    print("Saving Coefficients")
-    filename = "VSCFCoeff.pkl"
-    with open(filename, "wb") as f:
-        pickle.dump(coeff, f)
-    print("Done")
+    # print("Saving Coefficients")
+    # filename = "VSCFCoeff.pkl"
+    # with open(filename, "wb") as f:
+    #     pickle.dump(coeff, f)
+    # print("Done")
 
     # Finite Differential Method
     # which would be <exact> if our mesh intervals are small enough
