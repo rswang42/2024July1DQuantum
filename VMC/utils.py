@@ -1737,7 +1737,7 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
         print("=" * 50, "\n")
         print(f"VMC Result with {state_indices} states:\n")
         for i, energyi, stdi in zip(state_indices, energy_levels, energy_levels_std):
-            print(f"n={i}\tenergy={energyi:.5f}({stdi[i]:.5f})\n")
+            print(f"n={i}\tenergy={energyi:.5f}({stdi:.5f})\n")
         print("=" * 50, "\n")
         print(f"Exact Result with {state_indices} states:\n")
         for i, energyi in zip(state_indices, exact_eigenvalues[state_indices]):
@@ -1778,7 +1778,10 @@ def training_kernel(args: dict, savefig: bool = True) -> None:
     plt.plot(xmesh, z_mesh)
     plt.xlabel("x")
     plt.ylabel("z=f(x)")
-    plt.savefig(filename)
+    if savefig:
+        plt.savefig(filename)
+    else:
+        plt.show()
     print("Figure saved.")
 
     print("======================================")
