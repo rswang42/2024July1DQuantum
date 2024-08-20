@@ -190,51 +190,36 @@ def main():
     xmesh = jnp.linspace(xmin, xmax, Nmesh)
     interval = xmesh[1] - xmesh[0]
 
-    nlevel = 15
+    total_states = 8
+    nlevel = 100
 
-    def wf_gs(coeff, x):
-        return _wf_base_vscf(x, 0, coeff)
+    def wf(coeff, x, n):
+        return _wf_base_vscf(x, n, coeff)
 
-    def wf_1st(coeff, x):
-        return _wf_base_vscf(x, 1, coeff)
-
-    wf_gs_vmapped = jax.vmap(wf_gs, in_axes=(None, 0))
-    wf_first_vmapped = jax.vmap(wf_1st, in_axes=(None, 0))
+    wf_vmapped = jax.vmap(wf, in_axes=(None, 0, None))
 
     vscf_obj = VSCF(nlevel=nlevel)
     energies, coeff = vscf_obj.solver()
-    totalen = np.sum(energies[:2:])
+    totalen = np.sum(energies[:total_states:])
 
     print("=" * 50)
-    # print("Saving Coefficients")
-    # filename = "VSCFCoeff.pkl"
-    # with open(filename, "wb") as f:
-    #     pickle.dump(coeff, f)
-    # print("Done")
-
     # Finite Differential Method
     # which would be <exact> if our mesh intervals are small enough
     potential_func = VMCEnergyEstimator.local_potential_energy
     H = buildH(potential_func, xmesh, Nmesh, interval)
     exact_eigenvalues, exact_eigenvectors = scipy.linalg.eigh(H)
-    trained_states_energy = exact_eigenvalues[range(2)]
+    trained_states_energy = exact_eigenvalues[range(total_states)]
     expectedenergy = np.sum(trained_states_energy)
     print(
         f"After optimization,\nTotal energy = {totalen}\nRef Energy = {expectedenergy}"
     )
 
     plt.figure()
-    for i in range(2):
-        if i == 0:
-            wf_gs_on_mesh = wf_gs_vmapped(coeff, xmesh)
-            normalize_gs = jnp.sum(wf_gs_vmapped(coeff, xmesh) ** 2 * interval)
-            wf_gs_on_mesh = wf_gs_on_mesh**2 / normalize_gs
-            plt.plot(xmesh, wf_gs_on_mesh, label=f"Rotated-n={i}", lw=2)
-        if i == 1:
-            wf_1st_on_mesh = wf_first_vmapped(coeff, xmesh)
-            normalize_1st = jnp.sum(wf_first_vmapped(coeff, xmesh) ** 2 * interval)
-            wf_1st_on_mesh = wf_1st_on_mesh**2 / normalize_1st
-            plt.plot(xmesh, wf_1st_on_mesh, label=f"Rotated-n={i}", lw=2)
+    for i in range(total_states):
+        wf_on_mesh = wf_vmapped(coeff, xmesh, i)
+        normalize_wf = jnp.sum(wf_vmapped(coeff, xmesh, i) ** 2 * interval)
+        wf_on_mesh = wf_on_mesh**2 / normalize_wf
+        plt.plot(xmesh, wf_on_mesh, label=f"Rotated-n={i}", lw=2)
 
         exact_wf_on_mesh = exact_eigenvectors[:, i]
         normalize_factor = (exact_wf_on_mesh**2).sum() * interval

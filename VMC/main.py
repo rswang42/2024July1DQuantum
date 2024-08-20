@@ -89,9 +89,9 @@ def main():
 
     # Global System settings
     batch_size = 200
-    mlp_width = 100
+    mlp_width = 1000
     mlp_depth = 1
-    init_learning_rate = 5e-3
+    init_learning_rate = 5e-5
     # NOTE: Sufficient MCMC Sampling
     # is VITAL!
     # For example, calculating 0,1
